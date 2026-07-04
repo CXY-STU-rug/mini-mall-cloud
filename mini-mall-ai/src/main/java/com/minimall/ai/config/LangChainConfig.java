@@ -1,6 +1,7 @@
 package com.minimall.ai.config;
 
 import com.minimall.ai.agent.ShoppingAssistant;
+import com.minimall.ai.tool.ProductQueryTool;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatLanguageModel;
@@ -76,14 +77,17 @@ public class LangChainConfig {
      *    .chatLanguageModel  绑定生成模型(DeepSeek)
      *    .contentRetriever   绑定RAG检索器(问答前自动检索知识, 塞进prompt) —— 这就是RAG接进来的地方
      *    .chatMemoryProvider 每个 memoryId(userId) 一份记忆, 存最近10条消息(多轮对话)
+     *    .tools              挂上 function-calling 工具, DeepSeek 自动决定何时调用查商品
      */
     @Bean
     public ShoppingAssistant shoppingAssistant(ChatLanguageModel chatModel,
-                                               ContentRetriever contentRetriever) {
+                                               ContentRetriever contentRetriever,
+                                               ProductQueryTool productQueryTool) {
         return AiServices.builder(ShoppingAssistant.class)
                 .chatLanguageModel(chatModel)
                 .contentRetriever(contentRetriever)
                 .chatMemoryProvider(memoryId -> MessageWindowChatMemory.withMaxMessages(10))
+                .tools(productQueryTool)
                 .build();
     }
 }
