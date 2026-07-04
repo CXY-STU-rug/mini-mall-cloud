@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 继承根 pom: 拿 Spring Boot 3.3.5 + SC/SCA + Nacos + Sentinel 版本管理 -->
+    <parent>
+        <groupId>com.minimall</groupId>
+        <artifactId>mini-mall-cloud</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>mini-mall-ai</artifactId>
+    <name>mini-mall-ai</name>
+    <description>AI 智能客服 Agent: LangChain4j + DeepSeek + RAG(bge-m3/Redis向量) + 商品查询工具</description>
+
+    <!-- ⭐ LangChain4j BOM: 统一管理 langchain4j 全家桶版本, 子依赖不用各写版本号
+         (核心模块和集成模块版本经常不一致, BOM 保证兼容) -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-bom</artifactId>
+                <version>0.36.2</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+
+        <!-- ① common-core: Result / BusinessException / 全局异常
+                (Feign starter 也从 common-core 传递过来, 不用单独引) -->
+        <dependency>
+            <groupId>com.minimall</groupId>
+            <artifactId>mini-mall-common-core</artifactId>
+        </dependency>
+
+        <!-- ② common-security: 从 X-User-Id 头拿当前 userId (聊天按用户隔离记忆用) -->
+        <dependency>
+            <groupId>com.minimall</groupId>
+            <artifactId>mini-mall-common-security</artifactId>
+        </dependency>
+
+        <!-- ③ 公共 Swagger / Knife4j -->
+        <dependency>
+            <groupId>com.minimall</groupId>
+            <artifactId>mini-mall-common-swagger</artifactId>
+        </dependency>
+
+        <!-- ④ Spring Web: 写 @RestController (POST /ai/chat) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- ⑤ Sentinel 规则持久化到 Nacos (跟其它业务服务一致) -->
+        <dependency>
+            <groupId>com.alibaba.csp</groupId>
+            <artifactId>sentinel-datasource-nacos</artifactId>
+        </dependency>
+
+        <!-- ⑥ ⭐ LangChain4j 核心: AiServices 声明式 agent + @Tool + RAG 编排 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+        </dependency>
+
+        <!-- ⑦ ⭐ OpenAI 集成: DeepSeek 走 OpenAI 兼容协议, 用这个接 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+        </dependency>
+
+        <!-- ⑧ ⭐ Ollama 集成: 调本地 bge-m3 做 embedding -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-ollama</artifactId>
+        </dependency>
+
+        <!-- ⑨ ⭐ Redis 集成: 向量存 Redis Stack(RediSearch) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-redis</artifactId>
+        </dependency>
+
+        <!-- ⑩ Lombok (common-core 里 optional 不传递, 每个模块自己声明) -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+    </dependencies>
+
+    <!-- 显式声明 spring-boot-maven-plugin 才能打 fat jar (一条 java -jar 就能跑) -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

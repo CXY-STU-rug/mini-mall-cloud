@@ -1,0 +1,23 @@
+# ═══════════════════════════════════════════════════════════
+# mini-mall-ai 配置模板 (示例)
+# 用法: cp application.yml.example application.yml
+# ⚠ 真实 application.yml 已被 .gitignore 忽略 (Task2 起会含 DeepSeek key, 绝不进 git)
+# ═══════════════════════════════════════════════════════════
+server:
+  port: 9009
+
+spring:
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8858
+        port: 8726
+      eager: true
+
+logging:
+  level:
+    com.minimall: debug
+    root: info

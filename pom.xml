@@ -43,6 +43,8 @@
         <module>mini-mall-file</module>
         <!-- ⭐ SEC-2 Step2：支付服务 (支付宝沙箱, 支付单/退款单/回调验签幂等) -->
         <module>mini-mall-payment</module>
+        <!-- ⭐ AI 阶段：智能客服 Agent (LangChain4j + DeepSeek + RAG + 商品查询工具) -->
+        <module>mini-mall-ai</module>
 
     </modules>
 
