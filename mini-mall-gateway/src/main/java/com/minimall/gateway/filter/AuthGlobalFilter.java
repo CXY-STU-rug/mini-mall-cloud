@@ -228,6 +228,10 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         //    注意: /pay/notify、/refund/notify 已在 WHITE_LIST 提前放行(免鉴权), 走不到这里, 不冲突。
         if (path.startsWith("/pay")) return true;
         if (path.startsWith("/refund")) return true;
+        // ⭐ AI 阶段: AI 客服对话是 C 端登录用户操作, 本人 token 即可(不需 admin)。
+        //    没放进 WHITE_LIST 是故意的: 要让网关校验 JWT 并注入 X-User-Id, 否则对话记忆没法按用户隔离,
+        //    且能挡住匿名请求白烧 DeepSeek 额度。
+        if (path.startsWith("/ai")) return true;
         return false;
     }
 
