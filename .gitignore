@@ -57,3 +57,7 @@ spring-boot-*.log
 *.p12
 .env
 .env.local
+
+# --- 第三方 clone 的学习资料 (开源仓库, 不属于本项目, 别误提交) ---
+散笔记/advanced-java-main/
+散笔记/jvm-main/

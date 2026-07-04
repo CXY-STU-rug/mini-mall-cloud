@@ -623,6 +623,17 @@ V# mini-mall-cloud 微服务完整学习笔记（合并版）
   - [79.4  踩坑实录 (5 大坑)](#sec804)
   - [79.5  端到端验证 (6/6 通过)](#sec805)
   - [79.6  本轮累计能力 + 设计反思](#sec806)
+- [第 80 章 · C 端商城 + 越权安全专题](#sec810)
+  - [80.1  RBAC 角色权限体系 (ADMIN 阶段地基)](#sec811)
+  - [80.2  对象存储 MinIO (FILE 服务)](#sec812)
+  - [80.3  DTO / VO 分层 + 参数校验 (/user/me)](#sec813)
+  - [80.4  MyBatis-Plus:一个字段存多张图 (商品缩略图)](#sec814)
+  - [80.5  地址默认互斥 (MP null 不更新 + 事务)](#sec815)
+  - [80.6  越权安全专题 ⭐ (含网关白名单 / WebFlux / needAdmin)](#sec816)
+  - [80.7  数据规范:分类图标该存什么](#sec817)
+  - [80.8  上线准备:Docker 化 (刚起步)](#sec818)
+  - [80.9  环境 / 打包 踩坑速查](#sec819)
+  - [80.10  这一章的主线 (一条链)](#sec820)
 
 
 # 微服务基础知识点 <a id="sec001"></a>
@@ -20735,3 +20746,578 @@ OAuth 浏览器流程验证了 `userFeignClient.getByOauth("github", oauthId)` �
 ---
 
 **AUTH 阶段完毕**. mini-mall-cloud 至此**认证业务独立成服务**, 微服务架构进一步合理化. 下一步可选: ① 微信/支付宝 OAuth 复用 auth ② 抽 `user-api` 模块解决 `model.User` 重复定义 ③ 给 internal 接口加调用方身份校验 (X-Service-Name)
+
+---
+---
+
+# 第 80 章 · C 端商城 + 越权安全专题 <a id="sec810"></a>
+
+> 承接第 79 章「AUTH 阶段完毕」。时间线: ADMIN 后台(6-25) → FILE/MinIO(6-26) → 前端联调补全(6-27) → 越权安全修复。
+> 覆盖: RBAC 角色权限 → 对象存储 MinIO → DTO/VO 分层 → MyBatis-Plus 进阶 → 越权安全专题(含网关白名单/WebFlux/needAdmin) → 上线 Docker 化。
+
+## 80.1 RBAC 角色权限体系(ADMIN 阶段地基) <a id="sec811"></a>
+
+### 背景:为什么要引入 role
+
+第 79 章之前系统只分「登录 / 未登录」。要做后台, 必须再分「普通用户 / 管理员」, 于是 user 表加一列 role:
+
+```
+role = 0  →  普通用户(C 端, 买东西)
+role = 1  →  管理员(后台, 管商品/管用户)
+```
+
+**这一个字段, 是后面所有垂直越权判断的依据。**
+
+### 后台接口的真实样子(AdminUserController)
+
+```java
+@RestController
+@RequestMapping("/admin/user")     // ⭐ 关键: 挂 /admin/ 前缀
+public class AdminUserController {
+    // static final: 整个类共享一个加密器, 不用每次 new(BCrypt 加密器线程安全)
+    private static final BCryptPasswordEncoder ENCODER = new BCryptPasswordEncoder();
+    @Autowired
+    private UserMapper userMapper;
+```
+
+类注释道破整个 RBAC 设计的精髓:
+
+```java
+/**
+ * 全部走网关 /admin/** 路径 → 网关 AuthGlobalFilter 已经做了:
+ *   ① 必须带 JWT (否则 401)
+ *   ② role 必须 = 1 (否则 403)
+ * 所以这里不用再校验权限, 信任网关传来的 X-User-Id.
+ */
+```
+
+- `@RequestMapping("/admin/user")` —— 只要路径以 `/admin/` 开头, 网关就自动拦「非管理员 403」。Controller 里一行权限代码都不写, 权限收口在网关一处。
+- 「信任网关传来的 X-User-Id」—— 下游不再自己解 token, 网关解完把 userId 塞 header 传下来。下游端口(9001)不对外暴露, 外部只能走 9080 网关, 所以信任安全。
+- 这就是「约定优于配置」: 管理接口挂 `/admin/` 是团队约定; 约定成立权限就自动生效。将来加十个后台接口, 只要挂对前缀, 零成本。
+
+### MyBatis-Plus 条件分页(真实代码)
+
+```java
+@GetMapping("/page")
+public Result<IPage<User>> page(AdminUserPageDTO query) {   // 参数从 query string 自动绑定
+    Page<User> p = Page.of(query.getPage(), query.getSize());       // ① 造分页对象
+    QueryWrapper<User> wrapper = new QueryWrapper<>();              // ② 造条件构造器
+    // ③ 关键词模糊: username 或 nickname 命中即可
+    if (query.getKeyword() != null && !query.getKeyword().isEmpty()) {
+        wrapper.and(w -> w.like("username", query.getKeyword())
+                          .or().like("nickname", query.getKeyword()));
+    }
+    // ④ 状态/角色: 传了才加条件, null 就不筛
+    if (query.getStatus() != null) wrapper.eq("status", query.getStatus());
+    if (query.getRole()   != null) wrapper.eq("role",   query.getRole());
+    wrapper.orderByDesc("id");
+    IPage<User> result = userMapper.selectPage(p, wrapper);        // ⑤ MP 自动拼 LIMIT + 查 count
+    result.getRecords().forEach(u -> u.setPassword(null));         // ⑥ ⭐ 兜底: 清掉密文
+    return Result.success(result);
+}
+```
+
+- `page(AdminUserPageDTO query)` 没有 `@RequestBody` —— GET 请求参数在 URL 里(`?page=1&size=20&keyword=alice`), Spring MVC 自动把 query string 映射进 DTO。这是 GET 和 POST 收参的根本区别。
+- `wrapper.and(w -> w.like(...).or().like(...))` —— 这层嵌套很关键。生成 SQL 是 `AND (username LIKE ? OR nickname LIKE ?)`。如果不套 `and(...)`, 会变成 `... AND username LIKE ? OR nickname LIKE ?`, OR 把前面 status/role 条件「漏出去」(SQL 里 AND 优先级高于 OR)。**套括号是防逻辑短路的常见坑。**
+- `if (xxx != null)` 才加条件 —— 动态查询: 前端没传的筛选项就不拼进 SQL, 一个方法应付所有筛选组合。
+- `selectPage(p, wrapper)` —— 分页插件(PaginationInnerInterceptor)拦截, 自动加 LIMIT 并额外发 `SELECT COUNT(*)`。没配这个插件, selectPage 会查全表。
+
+### ⚠ 坑:@JsonIgnore 拿掉后, 密文必须手动兜底
+
+第 79 章为了让 auth 服务能通过 Feign 拿到 password 密文, 拿掉了 `User.password` 上的 `@JsonIgnore`。代价是: 所有对外返回 User 的地方, 必须手动 `setPassword(null)`, 否则密文泄露。
+
+```java
+user.setPassword(null);   // ⭐ 兜底: 不返密文给前端
+```
+
+设计权衡记牢: `@JsonIgnore` 是「框架自动兜底」, 跨服务传输时它挡了该传的密文, 只能退化成「调用方手动兜底」。**抽微服务时实体上的序列化注解要重新审视。**
+
+## 80.2 对象存储 MinIO(FILE 服务) <a id="sec812"></a>
+
+### 为什么单独建一个服务存文件
+
+图片/视频不能存数据库(BLOB 撑爆库、备份慢、CDN 用不上)。正确做法: 文件放对象存储(MinIO = 自建版 AWS S3), 数据库只存访问 URL。
+
+### MinioConfig:把 MinioClient 交给 Spring 管
+
+```java
+@Configuration
+public class MinioConfig {
+    @Resource
+    private MinioProperties minioProperties;   // 从 yml 读的配置(endpoint/key/bucket)
+
+    @Bean                                       // ⭐ 注册成 Spring Bean, 全局复用一个连接客户端
+    public MinioClient minioClient() {
+        return MinioClient.builder()
+                .endpoint(minioProperties.getEndpoint())      // MinIO 地址 http://localhost:9000
+                .credentials(minioProperties.getAccessKey(),  // 账号密码
+                             minioProperties.getSecretKey())
+                .build();
+    }
+}
+```
+
+- `@Configuration` + `@Bean` —— 第三方类(MinioClient 是 minio SDK 的, 没法加 @Component)要交给 Spring 管理, 就在配置类里 @Bean 手动 new 一个返回。Spring 纳入容器, 别处 @Autowired 就能拿。
+- 为什么做成单例 Bean —— MinioClient 内部维护 HTTP 连接池, 全局一个就够, 别每次上传 new。
+
+### MinioService.upload:上传核心(真实代码)
+
+```java
+public String upload(MultipartFile file, String bizType) {
+    if (file == null || file.isEmpty()) {                    // ① 防空
+        throw new BusinessException(500, "文件为空");
+    }
+    // ② 构造对象名: {业务类型}/{日期}/{UUID}.{扩展名}
+    String fileName = file.getOriginalFilename();
+    String suffix   = fileName.substring(fileName.lastIndexOf("."));   // 取 ".png"
+    String objectName = bizType + "/" + LocalDate.now() + "/"
+                        + UUID.randomUUID() + suffix;
+    try (InputStream is = file.getInputStream()) {           // ③ try-with-resources 自动关流
+        minioClient.putObject(
+            PutObjectArgs.builder()
+                .bucket(props.getBucket())               // 桶名 mini-mall
+                .object(objectName)                       // 对象路径
+                .stream(is, file.getSize(), -1)           // 数据流 + 大小
+                .contentType(file.getContentType())       // MIME 类型 image/png
+                .build());
+    } catch (Exception e) {
+        throw new BusinessException(500, "上传失败: " + e.getMessage());
+    }
+    return props.getPublicUrl() + "/" + objectName;          // ④ 返完整 URL
+}
+```
+
+- `bizType + "/" + LocalDate.now() + "/" + UUID` —— 对象名设计有讲究: bizType(product/avatar)一级目录分业务; 日期二级目录按天分桶, 避免单目录几十万文件; UUID 防重名。两个人都传 phone.png, UUID 保证不覆盖。**这就是为什么库里绝不能存裸 phone.png——真实存储名是 UUID。**
+- `try (InputStream is = ...)` —— try-with-resources, 块结束自动 close, 不写 finally 也不漏流。
+- `.stream(is, file.getSize(), -1)` —— 第三个参数 -1 是「分片大小用默认」, 要传总大小让 MinIO 知道内容长度。
+- `contentType` 必须设, 否则浏览器访问图片 URL 可能当成下载而不是显示。
+- 返 `publicUrl + "/" + objectName` —— 拼成 `http://localhost:9000/mini-mall/product/2026-06-30/xxx.png`, 这个完整 URL 才是存库、给前端 `<img src>` 用的。
+
+### FileController:URL 和 objectName 都返回
+
+```java
+@PostMapping("/upload")
+public Result<Map<String, String>> upload(
+        @RequestParam("file") MultipartFile file,                          // 文件本体
+        @RequestParam(value = "bizType", defaultValue = "product") String bizType) {
+    String fileUrl = minioService.upload(file, bizType);
+    String objectName = fileUrl.replace(props.getPublicUrl() + "/", "");   // 从 URL 反推 objectName
+    return Result.success(Map.of("url", fileUrl, "objectName", objectName));
+}
+```
+
+- 为什么返两个字段: `url` 是完整地址前端直接渲染; `objectName` 是相对路径, 将来删文件要用它定位对象, 换域名/迁 CDN 时用它重拼 URL。
+- `@RequestParam("file") MultipartFile` —— 文件上传是 `multipart/form-data`, 用 `@RequestParam` 不是 `@RequestBody`。`defaultValue="product"` 让前端不传时默认归 product 目录。
+
+## 80.3 DTO / VO 分层 + 参数校验(/user/me) <a id="sec813"></a>
+
+### 设计思想:实体不出边界
+
+```
+前端 ─[UserProfileUpdateDTO 只放能改的]→ Controller ─[User]→ DB
+前端 ←[UserProfileVO 只放能看的]────────  Controller ←[User]─ DB
+```
+
+数据库实体 User(含 password/role/status)只在后端内部流转, 进出口各换一层。
+
+### 入参 DTO(真实代码, 含校验)
+
+```java
+@Data
+public class UserProfileUpdateDTO {
+    @Size(max = 20, message = "昵称不超过 20 字")
+    private String nickname;
+    @Pattern(regexp = "^1[3-9]\\d{9}$", message = "手机号格式不对")
+    private String phone;
+    @Email(message = "邮箱格式不对")
+    private String email;
+    @Size(max = 255, message = "头像 URL 太长")
+    private String avatar;
+}
+```
+
+DTO 类注释道破两层防护: 故意没放 username/role/status/password(字段白名单防越权); null 表示这次不改这个字段(配合 MP 空字段不更新, 实现局部更新)。
+
+- `@Size(max=20)` —— 字符串长度上限, 防止塞 10000 字昵称撑爆库/页面。
+- `@Pattern(regexp="^1[3-9]\\d{9}$")` —— 正则校验手机号: 1 开头, 第二位 3-9, 后跟 9 位数字, 共 11 位。`\\d` 双反斜杠是 Java 字符串转义(实际正则 `\d`)。
+- `@Email` —— 内置邮箱格式校验。
+- **⚠ 一个坑**: null 会跳过 @Pattern/@Email(不传就不校验, 合理); 但传 `""` 空串会失败(空串不匹配手机号正则)。前端要改就传值, 不改就别传这个字段, 别传空串。
+- **为什么「不放 role 字段」就防住越权**: 前端 body 塞 `{"role":1}`, 反序列化成 DTO 时这个类根本没有 role 字段, Jackson 直接丢弃。用户从根上没法通过这个接口提权。
+
+### Controller:@Valid 触发校验 + 字段白名单落库
+
+```java
+@PutMapping("/me")
+public Result<Void> updateMe(@Valid @RequestBody UserProfileUpdateDTO dto) {  // ⭐ @Valid
+    Long userId = SecurityContextHolder.getUserId();   // ① userId 从网关透传的 header 拿, 绝不信前端
+    User update = new User();                           // ② 组装更新对象, 只放允许字段
+    update.setId(userId);              // 主键 = 当前登录用户, 不给前端指定
+    update.setNickname(dto.getNickname());
+    update.setPhone(dto.getPhone());
+    update.setEmail(dto.getEmail());
+    update.setAvatar(dto.getAvatar());
+    // role/status/password 这里根本不 set → 永远不会被改
+    userService.updateById(update);                    // ③ MP 局部更新: null 字段不进 UPDATE SQL
+    return Result.success();
+}
+```
+
+三层防护叠在一起:
+1. `@Valid` —— 触发 DTO 校验注解, 不合格自动抛 `MethodArgumentNotValidException` → 全局异常处理器返 400。
+2. `update.setId(userId)` —— 主键强制用网关传来的 userId, 前端没机会指定改谁。
+3. 只 set 4 个字段 —— 即使 DTO 侧防线被绕过, Controller 也只把这 4 个字段落库, role/status/password 物理上不参与 UPDATE。
+
+### 出参 VO(me 方法)
+
+```java
+@GetMapping("/me")
+public Result<UserProfileVO> me() {                  // ← 返 VO 不返 User
+    Long userId = SecurityContextHolder.getUserId();
+    User user = userMapper.selectById(userId);
+    if (user == null) throw new BusinessException("用户不存在");
+    UserProfileVO vo = new UserProfileVO();
+    BeanUtils.copyProperties(user, vo);              // 同名字段自动拷, password 因 VO 没这字段被丢弃
+    return Result.success(vo);
+}
+```
+
+`BeanUtils.copyProperties(user, vo)` —— Spring 工具, 按字段名相同从 user 拷到 vo。user 有 password, vo 没这字段 → 自动跳过, 顺手完成脱敏。比手写十几行 setXxx 省事。注意: 浅拷贝、走反射性能一般, 高频接口用 MapStruct(编译期生成拷贝代码)。
+
+## 80.4 MyBatis-Plus:一个字段存多张图(商品缩略图) <a id="sec814"></a>
+
+商品有多张缩略图, 不想为此单独建一张 product_image 表, 用一个字段存 JSON 数组:
+
+```java
+// Product.java 真实代码
+@TableField(typeHandler = JacksonTypeHandler.class)
+private List<String> thumbnails;
+```
+
+- **写库**: MP 用 JacksonTypeHandler 把 `List<String>` 序列化成 JSON 字符串 `["a.png","b.png"]`, 存进 varchar/text 列。
+- **读库**: 反序列化回 `List<String>`。数据库里那一列就是普通字符串, 不是特殊类型。
+- **适用场景**: 数量少、不需要单独按图片查询的集合(缩略图、标签)。如果要「按某张图反查商品」, 就得拆表。
+- **⚠ 坑提醒**: 字段级 typeHandler 对 insert/update 天然生效; 但查询自动映射要类上加 `@TableName(autoResultMap=true)`, 否则 SELECT 出来 thumbnails 可能不反序列化(拿到 null)。当前 Product 类只有 `@Getter @Setter`, 如果查出来 thumbnails 为 null, 先去类上补 `@TableName(value="product", autoResultMap=true)`。
+
+## 80.5 地址默认互斥(MP null 不更新 + 事务) <a id="sec815"></a>
+
+### 现象与根因
+
+前端截图: 一个用户有两个地址都标「默认」。根因: 新增地址时前端 body 里 isDefault=1 被直接落库, 绕过了「设默认」的专用接口, 导致多个默认并存。
+
+### 三层修复(真实代码)
+
+**① 新增强制非默认**(AddressController.create):
+
+```java
+address.setUserId(userId);       // ⭐ 强制盖 userId, 防伪造别人地址
+address.setIsDefault((byte) 0);  // ⭐ 新地址必为非默认, 想设默认走专用接口
+addressService.save(address);
+```
+
+**② 改内容时不动 is_default**(AddressController.update):
+
+```java
+address.setId(id);
+address.setUserId(userId);
+address.setIsDefault(null);      // ⭐ null → MP 不把 is_default 拼进 UPDATE SQL
+addressService.updateById(address);
+```
+
+这里用到 MP 核心机制: **FieldStrategy.NOT_NULL(默认策略)—— 实体里为 null 的字段, 不会出现在 UPDATE 语句里。** 所以把 isDefault 设 null, 这次 update 只改地址内容, 碰都不碰 is_default 列。「改内容」和「改默认」两个动作彻底解耦。
+
+**③ 设默认走专用接口 + 事务两条 SQL**(AddressServiceImpl):
+
+```java
+@Override
+@Transactional(rollbackFor = Exception.class)   // ⭐ 显式指定所有异常都回滚
+public void setDefaultAddress(Long userId, Long addressId) {
+    addressMapper.clearDefaultByUserId(userId);      // ① 先把我名下所有地址 is_default=0
+    addressMapper.setDefaultById(addressId, userId); // ② 再把指定这条设 1
+}
+```
+
+```java
+@Update("UPDATE address SET is_default = 0 WHERE user_id = #{userId}")
+void clearDefaultByUserId(@Param("userId") Long userId);
+
+@Update("UPDATE address SET is_default = 1 WHERE id = #{addressId} AND user_id = #{userId}")
+void setDefaultById(@Param("addressId") Long addressId, @Param("userId") Long userId);
+```
+
+三个知识点:
+1. **`@Transactional(rollbackFor = Exception.class)` 为什么显式写** —— Spring 默认只对 RuntimeException 和 Error 回滚, checked 异常(如 IOException)不回滚。显式写上, 保证第②步失败第①步也回滚, 不会出现「全清 0 但没设新默认」的脏状态。两条 UPDATE 必须同生共死。
+2. **第②条 SQL 的 `AND user_id = #{userId}` 是水平越权防线** —— 别人的 addressId 传进来, user_id 对不上, 匹配不到行, 更新 0 条, 设不了默认。哪怕 Controller 层漏判, SQL 这层也兜住。
+3. **`#{}` 与 `@Param`** —— `#{userId}` 是 MyBatis 预编译占位符(PreparedStatement 的 ?), 防 SQL 注入; 多参数必须 @Param 命名, SQL 里才能 `#{userId}` 引用。
+
+## 80.6 越权安全专题 ⭐(本会话核心) <a id="sec816"></a>
+
+### 两种越权
+
+| 类型 | 定义 | 例子 | 防线 |
+|---|---|---|---|
+| 水平越权 | 同级用户互碰数据 | A 改 B 的地址/订单 | 校验归属: 资源 owner == 当前用户 |
+| 垂直越权 | 低权碰高权接口 | C 端用户改商品/发秒杀 | 校验角色: role == 1 |
+
+**铁律: userId / role 只从 token(网关透传的 X-User-Id / X-User-Role header)拿, 永远不信前端 body。**
+
+### 鉴权链路全图(两道关)
+
+```
+外部请求 (Authorization: Bearer <token>)
+   │
+   ▼
+┌──── 网关 AuthGlobalFilter(粗粒度: 你是谁 / 能不能进这类接口)────┐
+│ ① 黑名单 /user/internal → 直接 403(服务间接口不对外)          │
+│ ② 白名单(登录、GET 商品) → 放行                              │
+│ ③ 解析 token → userId + role                                  │
+│ ④ needAdmin(path, method)? → 要 role==1                       │
+│ ⑤ userId、role 塞进 X-User-Id / X-User-Role 透传              │
+└──────────────────────┬────────────────────────────────────────┘
+                       ▼
+┌── Controller/Service(细粒度: 这条具体数据是不是你的)──────────┐
+│ getAndCheckOwn(id, userId) / order.getUserId().equals(userId) │
+└────────────────────────────────────────────────────────────────┘
+```
+
+为什么必须两层: 网关只知道「你是登录用户 / 管理员」, 它不可能知道 address id=7 是不是你的——那要查库比对, 只能在业务服务做。**垂直越权在网关拦, 水平越权在 Service 拦。**
+
+### 网关第一关:白名单(method + path 双维度)
+
+鉴权前先放行免登录接口。早期白名单只按 path 放行, 有个洞: `/product` 放行了, 会连 `POST /product`(改商品)一起放行。正解是路径 + 方法一起判断:
+
+```java
+// 用 record 描述一条白名单规则: 前缀 + 允许的方法集合
+private record WhitelistRule(String prefix, Set<HttpMethod> methods) {}
+
+private static final List<WhitelistRule> WHITE_LIST = List.of(
+        new WhitelistRule("/auth", null),                       // 登录注册, methods=null 表示不限方法
+        new WhitelistRule("/category", Set.of(HttpMethod.GET)), // 只放行 GET
+        new WhitelistRule("/product", Set.of(HttpMethod.GET)),  // ⭐ 只放行 GET, 写操作仍要鉴权
+        new WhitelistRule("/search/product", Set.of(HttpMethod.GET)),
+        new WhitelistRule("/review/product", Set.of(HttpMethod.GET)),
+        new WhitelistRule("/coupon/available", Set.of(HttpMethod.GET))
+);
+```
+
+```java
+boolean inWhiteList = WHITE_LIST.stream().anyMatch(r ->
+        path.startsWith(r.prefix())                              // 前缀命中
+        && (r.methods() == null || r.methods().contains(method)) // 且方法命中(null=不限)
+);
+```
+
+- `methods() == null` 表示「不限方法」—— /auth 登录注册 GET/POST 都要放行, 用 null 偷懒。
+- `Set.of(HttpMethod.GET)` —— 商品/分类只放行浏览(GET), POST/PUT/DELETE 掉进后面的鉴权 + needAdmin。**这正是垂直越权修复能成立的前提: 白名单只开了读口子, 写口子留给了 needAdmin。**
+- **Java record 是什么**: Java 16+ 的「不可变数据载体」。一行等价于自动生成 private final 字段、全参构造器、prefix()/methods() 访问器、equals/hashCode/toString。适合纯数据、不可变的小对象(配置规则、DTO), 省掉几十行样板。注意访问器是 `prefix()` 不是 `getPrefix()`。
+
+### 网关写法:响应式 WebFlux 风格(和单体拦截器的区别)
+
+网关是 Spring Cloud Gateway, 基于 WebFlux(响应式), 不是传统 Servlet。写法和单体 JwtInterceptor 不同:
+
+| 维度 | 单体 JwtInterceptor | 网关 AuthGlobalFilter |
+|---|---|---|
+| 返回值 | boolean(true 放行) | Mono<Void>(响应式流) |
+| 拿请求 | HttpServletRequest | ServerWebExchange / ServerHttpRequest |
+| 传 userId | ThreadLocal | HTTP header(X-User-Id) |
+
+```java
+// 中断响应(返 401): 不调 chain.filter() = 请求到此为止, 不转发下游
+private Mono<Void> unauthorized(ServerWebExchange exchange) {
+    exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+    return exchange.getResponse().setComplete();   // setComplete = 结束响应链
+}
+
+// 放行并透传: mutate() 改请求, 塞 header
+ServerHttpRequest mutated = request.mutate()
+        .header("X-User-Id", String.valueOf(userId))
+        .header("X-User-Role", role == null ? "0" : String.valueOf(role))
+        .build();
+return chain.filter(exchange.mutate().request(mutated).build());
+```
+
+- `request.mutate()` —— 请求对象是不可变的, 想加 header 必须 mutate() 造一个新的。这是响应式/函数式风格的常态。
+- `chain.filter(exchange)` = 放行到下游; 不调它 = 拦下。返回 setComplete() 就是「到此为止」。
+- `getOrder()` 返 -100 —— filter 执行顺序, 越小越先。鉴权要在路由处理之前跑, 所以给个很小的值抢先执行。
+
+### 垂直越权修复:needAdmin(真实代码)
+
+```java
+private boolean needAdmin(String path, HttpMethod method) {
+    if (path.startsWith("/admin/")) {           // ① 后台接口: /admin/** 一律要管理员
+        return true;
+    }
+    boolean isWrite = method == HttpMethod.POST  // ② 只拦写操作; GET 放行(C 端要浏览商品)
+            || method == HttpMethod.PUT
+            || method == HttpMethod.DELETE;
+    if (!isWrite) {
+        return false;   // GET 短路, 不走后面前缀判断
+    }
+    return path.startsWith("/product")          // ③ 管理资源写操作: 命中任一前缀 → 要管理员
+            || path.startsWith("/seckill/activity");
+}
+```
+
+```java
+if (needAdmin(path, method)) {
+    if (role == null || role.intValue() != 1) {    // 老 token 没 role → null → 按非管理员
+        exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);   // 403
+        return exchange.getResponse().setComplete();
+    }
+}
+```
+
+修复的两个漏洞:
+- **商品写接口裸奔**: POST/PUT/DELETE /product 挂在 /product 下(不是 /admin/), 原来网关只拦 /admin/, 导致任何登录用户都能改任意商品。
+- **秒杀发布裸奔**: POST /seckill/activity 同理, 普通用户能自己发布「1 分钱抢 iPhone」。
+
+### ⭐ 前缀锁定的坑(最该记住的一点)
+
+`startsWith` 是前缀匹配。秒杀这里三个端点全是 POST, 必须精确区分:
+
+| 端点 | 谁用 | /seckill/activity 命中? |
+|---|---|---|
+| POST /seckill/activity | 管理员发布活动 | ✅ 命中 → 要 admin |
+| POST /seckill/123 (抢购) | C 端用户 | ❌ 不命中(123≠activity)→ 放行 |
+| POST /seckill/pay/xxx (支付) | C 端用户 | ❌ 不命中 → 放行 |
+
+**如果图省事写成 `path.startsWith("/seckill")`, 三条全命中, 用户抢购和支付全部 403, 秒杀功能直接瘫痪。** 这就是「前缀要锁到刚好那一段」的血泪教训。
+
+### 水平越权防护:归属校验模板(真实代码)
+
+**模板 A:查 + 校验归属**(地址, 写得很规范):
+
+```java
+private Address getAndCheckOwn(Long id, Long currentUserId) {
+    Address addr = addressService.getById(id);
+    if (addr == null) {
+        throw new BusinessException(404, "地址不存在");        // 不存在
+    }
+    if (!addr.getUserId().equals(currentUserId)) {
+        throw new BusinessException(403, "无权访问该地址");     // 不是你的 → 越权
+    }
+    return addr;
+}
+```
+
+为什么显式传 currentUserId 而不在方法里 getUserId() —— 让方法对外部状态零依赖, 单元测试直接传参, 不用 mock ThreadLocal, 更清晰更易测。
+
+**模板 B:列表强制过滤**:
+
+```java
+w.eq("user_id", userId)   // ⭐ 强制只查自己的, 不给前端任何传 userId 的机会
+```
+
+订单同理: getOrderDetail / cancelOrder / payOrder / signOrder 每个都有 `if (!order.getUserId().equals(userId)) throw 403`; listMyOrders 用 `eq("user_id", userId)`。**核心: 光在 Controller 传 userId 不算数, 必须在 Service 层真的拿它做比对/过滤。**
+总流程
+AuthGlobalFilter 从上到下的完整流程
+
+一个请求进来 filter(exchange):
+
+① 黑名单 BLACK_LIST     → 命中(/user/internal)→ 直接 403,结束
+        │ 没命中
+        ▼
+② 白名单 WHITE_LIST     → 命中(path+method)→ 直接放行,不验 token!
+   (path + method 判断)         例: GET /product 命中 → 免登录浏览
+        │ 没命中(说明这请求需要登录)
+        ▼
+③ 取 Authorization      → 没有 / 不是 Bearer → 401
+        ▼
+④ 解析 token            → 拿 userId + role;解析失败 → 401
+        │                    ↑↑↑ 这一步才叫「鉴权/认证」——证明你是谁
+        ▼
+⑤ needAdmin(path,method)→ 需要 admin 且 role≠1 → 403
+   (path + method 判断)         ↑↑↑ 这一步叫「授权」——判断你够不够格
+        │ 通过
+        ▼
+⑥ 塞 X-User-Id/X-User-Role header → 放行到下游
+
+### 安全思想:消除攻击面 > 加固攻击面
+
+订单有个裸奔的 `PUT /order/{orderId}/ship`(无任何身份校验), 但排查发现已存在正规入口 `PUT /admin/order/{id}/ship`(走 /admin/ 受网关保护, 调的是同一个 shipOrder())。处理方式: 直接删掉裸奔那个, 不打补丁。
+
+```java
+// ⑥ 发货接口已删除 (安全修复):
+//    发货是管理员操作, 已由 AdminOrderController 的 PUT /admin/order/{id}/ship 提供,
+//    受网关 role=1 保护; 原来这里的 PUT /order/{orderId}/ship 无校验且功能重复 → 删除。
+```
+
+**能消除一个入口, 就别去加固它。少一个入口 = 少一处要维护、将来可能忘记校验的地方。** 删方法后顺手清掉没人用的 import(Java 未使用 import 不报错, 但留着是垃圾、误导读者)。
+
+### 本轮排查总账
+
+| 资源 | 越权类型 | 结果 |
+|---|---|---|
+| 商品 增/删/改 | 垂直 | ❌→✅ 网关 /product 写要 admin |
+| 秒杀活动发布 | 垂直 | ❌→✅ 网关 /seckill/activity 要 admin |
+| 订单发货 | 垂直 | ❌→✅ 删冗余端点, 走 /admin/order/{id}/ship |
+| 地址 增删改查 | 水平 | ✅ 本就有 getAndCheckOwn |
+| 订单 取消/支付/签收 | 水平 | ✅ 本就有 order.getUserId().equals() |
+
+**规律: 垂直越权几乎清一色是「管理接口没走 /admin/ 前缀」。以后新增管理功能, 路径挂 /admin/ 下就自动安全。**
+
+## 80.7 数据规范:分类图标该存什么 <a id="sec817"></a>
+
+category.icon 现存 phone.png(裸名)、svsv(乱码)都是脏数据。三种合法形态:
+
+| 形态 | 存的内容 | 前端渲染 | 判定 |
+|---|---|---|---|
+| 完整 URL(推荐) | http://localhost:9000/mini-mall/x.png | `<img :src="icon">` | ✅ 走 MinIO, 正规 |
+| emoji | 📱 | `<span>{{icon}}</span>` | 偷懒/纯学习 |
+| 裸文件名 | phone.png | 浏览器同目录找 → 404 | ❌ 永远错 |
+
+结论: 已经有 file-service + MinIO, 就该走完整 URL——上传图 → 拿 {url, objectName} → `UPDATE category SET icon='<完整url>'`。既修数据, 也把 MinIO 链路端到端验证一遍。
+
+## 80.8 上线准备:Docker 化(刚起步) <a id="sec818"></a>
+
+### Dockerfile 模板
+
+```dockerfile
+FROM eclipse-temurin:21-jre-jammy        # ① JRE 21, 比 JDK 小 100MB+; jammy=Ubuntu22.04 基座
+WORKDIR /app                             # ② 容器内工作目录 = cd /app
+COPY target/mini-mall-user-*.jar app.jar # ③ 拷 jar, * 通配版本号(升版不改 Dockerfile)
+EXPOSE 9001                              # ④ 仅文档作用, 真映射靠 compose 的 ports:
+ENTRYPOINT ["java", "-jar", "app.jar"]   # ⑤ JSON 数组=exec form, kill 时能优雅关 JVM
+```
+
+### 环境变量抽取(上线前最关键改造)
+
+```yaml
+# 改前(只能本机跑): localhost 在容器里指容器自己, 连不到 MySQL
+url: jdbc:mysql://localhost:3306/mini_mall
+
+# 改后(本机/容器/服务器通用)
+url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:mini_mall}
+```
+
+`${MYSQL_HOST:localhost}` 语法 = 有环境变量用环境变量, 没有就用冒号后默认值。本机跑完全不受影响; 上容器时 compose 注入 MYSQL_HOST=mysql(容器名, Docker 内部 DNS 能解析)。
+
+**服务器选型结论**: 阿里云香港轻量 4C8G(免备案、年付 ¥1899)+ Ubuntu 22.04 + Docker Compose(不上 K8s, 4C8G 跑 K8s 自己吃掉 2GB)+ Let's Encrypt 免费证书。先本机 Docker 化跑通, 再上服务器, 别在按天烧钱的机器上装环境。
+
+## 80.9 环境 / 打包 踩坑速查 <a id="sec819"></a>
+
+| 坑 | 现象 | 正解 |
+|---|---|---|
+| 系统 JDK 8 | java -jar 跑不起 SB 3.3.5 | 用 `D:\jdk-21.0.11\bin\java.exe` 绝对路径 |
+| Get-NetTCPConnection -State Listen | 服务在跑却返回 0 条, 误判 DOWN | `netstat -an \| findstr LISTENING` / Test-NetConnection |
+| Start-Process 日志中文路径 | silent fail | 日志目录用 ASCII `C:\mini-mall-logs\` |
+| .ps1 脚本 | 被杀软自动删 | 用内联 PowerShell, 不落地 .ps1 |
+| fat jar 改 yml | 改了配置不重打包不生效 | 改 src/main/resources 下任何文件都得重 mvn package |
+| 网关 yml 加路由没重打 | /auth/** 全 404 | 抽服务/改路由, 网关 yml 一改就重打 gateway |
+
+## 80.10 这一章的主线(一条链, 不是散点) <a id="sec820"></a>
+
+```
+ADMIN 加 role 字段 ──► JWT 带 role claim ──► 网关白名单只开 GET ──► needAdmin 拦写操作
+   (RBAC 地基)          (身份载体)          (读写分离)           (垂直越权修复)
+
+DTO 限能填的字段 ──► 防提权    VO 限能看的字段 ──► 防泄露
+        └────────────► 配合 Service 归属校验 ──► 水平越权防护
+
+FILE/MinIO ──► 文件存对象存储、库里只存 URL ──► 修分类图标脏数据
+```
+
+看得出: ADMIN 铺的 role、白名单铺的读写分离、DTO/VO 铺的字段边界, 全是为本会话的越权修复做的铺垫。**安全不是最后补的, 是一层层设计出来的。**
+
+---
+
+**C 端商城 + 越权安全阶段完毕**。mini-mall-cloud 至此具备 RBAC 权限、对象存储、DTO/VO 边界、系统性越权防护。下一步: 上线 Docker 化(80.8 已起步)+ 沙箱支付接入。
