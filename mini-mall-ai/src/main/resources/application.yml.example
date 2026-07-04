@@ -32,6 +32,11 @@ ai:
     port: 6380
     dimension: 1024
 
+# Feign 熔断降级开关: 让 @FeignClient(fallback=) 生效
+feign:
+  sentinel:
+    enabled: true
+
 logging:
   level:
     com.minimall: debug
