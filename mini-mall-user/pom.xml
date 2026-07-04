@@ -84,6 +84,11 @@
             <artifactId>lombok</artifactId>
             <optional>true</optional>
         </dependency>
+        <!-- ⭐ 禁用账号即时生效: 禁用时往 Redis 写 user:disabled:{id}, 网关校验时查 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
         <!-- ⭐ common-security: JwtUtil + HeaderInterceptor + FeignAuthInterceptor -->
         <!--    自动配置 SecurityContextHolder, 自动在 Feign 请求里透传 X-User-Id -->
         <!--    JJWT 三件套已经通过 common-security 传递进来, 这里不用再写 -->

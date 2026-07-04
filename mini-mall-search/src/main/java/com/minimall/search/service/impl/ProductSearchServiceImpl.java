@@ -76,10 +76,43 @@ public class ProductSearchServiceImpl implements IProductSearchService {
         log.info("[search-sync] 全量同步完成, 共 {} 条", documents.size());
         return documents.size();
     }
+    /**
+     * SEC-2: 单商品增量同步 (终于实现, 之前一直是空壳)。
+     * 语义: "让 ES 里这个商品的状态跟数据库对齐" ——
+     *   商品在库且已上架(status=1) → upsert 进索引 (新增/编辑/重新上架 都靠这条)
+     *   商品不存在 / 已下架       → 从索引删掉 (下架商品不该被搜到)
+     * 调用方: product 服务在 上/下架、编辑、删除 后 Feign 调 POST /search/sync/{id}。
+     */
     @Override
     public void syncById(Long productId) {
-        log.info("syncById 还没实现, productId={}", productId);
-        return;
+        // ① Feign 单查商品 (走 product 详情接口, 详情不过滤下架, 所以能拿到 status=0 的商品)
+        Result<ProductSource> resp = productFeignClient.getById(productId);
+
+        // ② product 服务不可用(fallback 503) → 跳过本次, 【不能删索引】——
+        //    否则 product 一抖动, 商品就从搜索里消失了, 宁可暂时陈旧也不误删
+        if (resp == null || resp.getCode() == null) {
+            log.warn("[search-sync] syncById 响应异常, 跳过 productId={}", productId);
+            return;
+        }
+        if (resp.getCode() == 503) {
+            log.warn("[search-sync] product 服务不可用, 跳过 productId={}", productId);
+            return;
+        }
+
+        ProductSource src = resp.getData();
+
+        // ③ 商品不存在(404/业务异常) 或 已下架(status!=1) → 从 ES 删掉
+        //    deleteById 对"索引里本来就没有"的 id 不报错, 天然幂等
+        if (resp.getCode() != 200 || src == null
+                || src.getStatus() == null || src.getStatus() != 1) {
+            repository.deleteById(productId);
+            log.info("[search-sync] 商品不在售, 已从 ES 移除 productId={}", productId);
+            return;
+        }
+
+        // ④ 在售商品 → 转文档 upsert (save 有则覆盖无则插入, 跟 syncAll 的 saveAll 同语义)
+        repository.save(ProductDocument.from(src));
+        log.info("[search-sync] 增量同步完成 productId={}", productId);
     }
 
     @Override

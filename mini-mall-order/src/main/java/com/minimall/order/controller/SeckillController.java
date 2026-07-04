@@ -27,7 +27,7 @@ public class SeckillController {
     @Autowired
     private ISeckillActivityService seckillActivityService;
 
-    /** ① 管理员发布秒杀活动 (这里没做权限校验, 真生产要加管理员鉴权) */
+    /** ① 管理员发布秒杀活动 (权限已由网关拦截: POST /seckill/activity 要求 role=1, 见 AuthGlobalFilter.needAdmin) */
     @PostMapping("/activity")
     public Result<Long> publish(@RequestBody SeckillActivityDTO dto) {
         return Result.success(seckillActivityService.publishActivity(dto));

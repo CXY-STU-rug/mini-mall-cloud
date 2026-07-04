@@ -124,6 +124,38 @@
             <groupId>com.minimall</groupId>
             <artifactId>mini-mall-common-security</artifactId>
         </dependency>
+        <!-- ⭐ 并发学习: Redisson 分布式锁 (承接 Lab3 —— 单机 synchronized 救不了多实例)
+             版本 3.27.2: 兼容 SB 3.3.x / JDK21 的稳定版, 刻意避开有 StackOverflow bug 的 3.36。
+             只引核心 redisson, 不引 redisson-spring-boot-starter ——
+               demo 里手动 Redisson.create() 连本机 Redis, 不掺和 Spring 上下文, 跟前面 Lab 一样纯 JUnit。
+             父 pom 的 dependencyManagement 没锁 Redisson, 所以这里【必须写版本号】。 -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <version>3.27.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.checkerframework</groupId>
+            <artifactId>checker-qual</artifactId>
+            <version>3.43.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testng</groupId>
+            <artifactId>testng</artifactId>
+            <version>7.12.0</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <!-- ═══════════════════════════════════════════════════════════

@@ -2,6 +2,7 @@ package com.minimall.order.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;   // SEC-2: 条件 UPDATE(原子状态机)用
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.minimall.common.core.domain.Result;
 import com.minimall.common.core.exception.BusinessException;
@@ -459,13 +460,20 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
                 if (order == null) throw new BusinessException(404, "订单不存在");
                 if (!order.getUserId().equals(userId)) throw new BusinessException(403, "无权操作");
 
-                // 状态机: 只有"待付款"才能取消 (幂等保障 - 重复请求会被这里挡)
-                if (order.getStatus() != 0) {
+                // ⭐ SEC-2 原子状态机: UPDATE orders SET status=4 WHERE id=? AND status=0
+                //    老写法是"先查→Java判断→updateById"(check-then-act), 两个并发请求会都通过判断;
+                //    而且 cancel/pay/MQ关单 的 Redis 锁 key 各不相同, 根本互斥不了。
+                //    现在把"判断"塞进 UPDATE 的 WHERE 里, 数据库行锁保证只有一个请求改成功(rows=1),
+                //    输家 rows=0 → 报错。这跟扣库存 UPDATE...WHERE stock>=qty 是同一个套路。
+                LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+                uw.eq(Orders::getId, orderId)
+                  .eq(Orders::getStatus, OrderStatus.UNPAID)        // WHERE 里的"期望旧状态"
+                  .set(Orders::getStatus, OrderStatus.CANCELLED);   // SET 新状态
+                int rows = ordersMapper.update(null, uw);           // 第一参 null = 只用 wrapper 的 set
+                if (rows == 0) {
+                    // 抢输了(已被支付/已被 MQ 关掉/重复点击) → 明确拒绝, 绝不重复回库存
                     throw new BusinessException(400, "当前订单状态不可取消");
                 }
-
-                order.setStatus(OrderStatus.CANCELLED);
-                ordersMapper.updateById(order);
 
                 // ── G3.10 回库存: 查该订单全部明细, 逐个 Feign 调 product 还库存 ──
                 QueryWrapper<OrderItem> itemW = new QueryWrapper<>();
@@ -512,14 +520,19 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
                 if (order == null) throw new BusinessException(404, "订单不存在");
                 if (!order.getUserId().equals(userId)) throw new BusinessException(403, "无权操作");
 
-                // 状态机: 只有 0=待付款 能支付
-                if (order.getStatus() != 0) {
+                // ⭐ SEC-2 原子状态机: 0(待付款)→1(已付款), 条件 UPDATE 一步到位。
+                //    最关键的对手是 MQ 自动关单: 用户在第 30 分钟同时点支付,
+                //    老写法可能出现"MQ 关单回了库存, 支付又把状态改成已付款"的脏局面;
+                //    现在两边都走条件 UPDATE, 数据库保证只有一方赢。
+                LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+                uw.eq(Orders::getId, orderId)
+                  .eq(Orders::getStatus, OrderStatus.UNPAID)
+                  .set(Orders::getStatus, OrderStatus.PAID)
+                  .set(Orders::getPayTime, LocalDateTime.now());   // 附带字段跟状态同一条 UPDATE, 原子生效
+                int rows = ordersMapper.update(null, uw);
+                if (rows == 0) {
                     throw new BusinessException(400, "订单不可支付");
                 }
-
-                order.setStatus(OrderStatus.PAID);
-                order.setPayTime(LocalDateTime.now());
-                ordersMapper.updateById(order);
                 return null;
             });
         } finally {
@@ -538,16 +551,20 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
             return;   // 订单不存在 (可能被手动取消并物理删了), 跳过
         }
 
-        // ⭐ 幂等核心: 只有"待付款"才关
-        //    用户已付款 → 不能关
-        //    用户已手动取消 → 已是 CANCELLED, 跳过
-        //    消息重复投递 → 第二次进来这里也是 4, 直接跳过
-        if (!order.getStatus().equals(OrderStatus.UNPAID)) {
-            return;
+        // ⭐ SEC-2 幂等核心升级: 老写法"读 status 判断 → updateById"在 MQ 消费者里最危险,
+        //    因为这个方法【没有任何锁】, 跟用户支付/手动取消完全并发:
+        //      时刻T1: MQ 读到 status=0     时刻T1: 用户支付也读到 status=0
+        //      时刻T2: MQ 改成 4 + 回库存    时刻T2: 支付改成 1  ← 谁后写谁覆盖, 库存还被多回了一次
+        //    改成条件 UPDATE 后: 数据库只让一个 UPDATE 命中(rows=1), 输家 rows=0 安静退出。
+        //    消息重复投递天然幂等: 第二次 CAS 时 status 已是 4, rows=0 直接 return。
+        LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+        uw.eq(Orders::getId, orderId)
+          .eq(Orders::getStatus, OrderStatus.UNPAID)
+          .set(Orders::getStatus, OrderStatus.CANCELLED);
+        int rows = ordersMapper.update(null, uw);
+        if (rows == 0) {
+            return;   // 已付款/已取消/重复消息 → 什么都不做(尤其是不能回库存!)
         }
-
-        order.setStatus(OrderStatus.CANCELLED);
-        ordersMapper.updateById(order);
 
         // ── G3.10 回库存: 同 cancelOrder 套路 ──
         QueryWrapper<OrderItem> itemW = new QueryWrapper<>();
@@ -570,6 +587,42 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
     }
 
     // ════════════════════════════════════════════════════════════
+    // ⑥.5 支付回调标记已付款 (payment 服务 Feign internal 调, 无 userId)
+    // ════════════════════════════════════════════════════════════
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean markPaidByNotify(Long orderId) {
+        // ⭐ 跟 payOrder 同款 CAS, 但没有 userId 校验、没有 Redis 锁:
+        //    调用方是 payment 服务(可信), 幂等完全靠 WHERE status=0 兜住支付宝的重复回调。
+        //    时序对手是"MQ 30分钟关单": 若关单先赢(status已变4), 这里 rows=0, 支付不会把已关订单改活。
+        LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+        uw.eq(Orders::getId, orderId)
+          .eq(Orders::getStatus, OrderStatus.UNPAID)
+          .set(Orders::getStatus, OrderStatus.PAID)
+          .set(Orders::getPayTime, LocalDateTime.now());
+        int rows = ordersMapper.update(null, uw);
+        // rows=1: 本次真的把订单支付掉了; rows=0: 已付款/已取消/重复回调 → 幂等返回 false
+        return rows == 1;
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // ⑥.6 退款成功标记订单退款/关闭 (payment 服务 Feign internal 调)
+    // ════════════════════════════════════════════════════════════
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean markRefundedByNotify(Long orderId) {
+        // CAS: 已付款(1)或已发货(2) → 已取消(4)。in 条件让"发货后退款"也能覆盖。
+        // 待付款(0)不该走退款(它走的是取消); 已完成(3)/已取消(4)不动。
+        LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+        uw.eq(Orders::getId, orderId)
+          .in(Orders::getStatus, OrderStatus.PAID, OrderStatus.SHIPPED)
+          .set(Orders::getStatus, OrderStatus.CANCELLED);
+        int rows = ordersMapper.update(null, uw);
+        // ⚠ V1 从简: 这里没回补库存/退券。生产应像 cancelOrder 那样查明细逐个 restoreStock + 退券。
+        return rows == 1;
+    }
+
+    // ════════════════════════════════════════════════════════════
     // ⑦ G6 物流: 发货 (管理员调用)
     // ════════════════════════════════════════════════════════════
     @Override
@@ -581,26 +634,21 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
         Orders order = ordersMapper.selectById(orderId);
         if (order == null) throw new BusinessException(404, "订单不存在");
         //   第 2 步: 跳过 user_id 校验 (admin 不需要)
-        //   第 3 步: 状态机前置 — 必须 == OrderStatus.PAID (=1)
-        //            否则抛 BusinessException(400, "订单状态不可发货")
-        if (!order.getStatus().equals(OrderStatus.PAID)) {
+        //   第 3+4 步合并: ⭐ SEC-2 原子状态机 1(已付款)→2(已发货)
+        //   老写法"查→判断→updateById"两个管理员同时点发货会都成功(还可能互相覆盖运单号);
+        //   条件 UPDATE 保证只有第一次点击生效, 第二次 rows=0 报错。
+        // ─────────────────────────────────────────────────────────
+        LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+        uw.eq(Orders::getId, orderId)
+          .eq(Orders::getStatus, OrderStatus.PAID)
+          .set(Orders::getStatus, OrderStatus.SHIPPED)
+          .set(Orders::getShipTime, LocalDateTime.now())
+          .set(Orders::getLogisticsCompany, dto.getLogisticsCompany())
+          .set(Orders::getLogisticsNo, dto.getLogisticsNo());
+        int rows = ordersMapper.update(null, uw);
+        if (rows == 0) {
             throw new BusinessException(400, "订单状态不可发货");
         }
-
-        //   第 4 步: setStatus(OrderStatus.SHIPPED) + setShipTime(now)
-        //            + setLogisticsCompany(dto.getLogisticsCompany())
-        //            + setLogisticsNo(dto.getLogisticsNo())
-        //            最后 ordersMapper.updateById(order);
-        //
-        // 提示: now 用 LocalDateTime.now()
-        //       OrderStatus.SHIPPED 是已定义的常量 (=2)
-        // ─────────────────────────────────────────────────────────
-        order.setStatus(OrderStatus.SHIPPED);
-        order.setShipTime(LocalDateTime.now());
-        order.setLogisticsCompany(dto.getLogisticsCompany());
-        order.setLogisticsNo(dto.getLogisticsNo());
-        ordersMapper.updateById(order);
-
     }
 
     // ════════════════════════════════════════════════════════════
@@ -632,15 +680,16 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
             throw new BusinessException(403, "无权操作");
         }
 
-        // 第 3 步: 状态机前置 — 必须 SHIPPED 才能签收
-        if (!order.getStatus().equals(OrderStatus.SHIPPED)) {
+        // 第 3+4 步合并: ⭐ SEC-2 原子状态机 2(已发货)→3(已完成), 双击签收只成功一次
+        LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+        uw.eq(Orders::getId, orderId)
+          .eq(Orders::getStatus, OrderStatus.SHIPPED)
+          .set(Orders::getStatus, OrderStatus.COMPLETED)
+          .set(Orders::getFinishTime, LocalDateTime.now());
+        int rows = ordersMapper.update(null, uw);
+        if (rows == 0) {
             throw new BusinessException(400, "订单状态不可签收");
         }
-
-        // 第 4 步: 改状态 + 填签收时间
-        order.setStatus(OrderStatus.COMPLETED);
-        order.setFinishTime(LocalDateTime.now());
-        ordersMapper.updateById(order);
     }
 }
 

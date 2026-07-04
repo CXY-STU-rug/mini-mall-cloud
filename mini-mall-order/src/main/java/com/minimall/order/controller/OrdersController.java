@@ -3,12 +3,9 @@ package com.minimall.order.controller;
 import com.minimall.common.core.context.SecurityContextHolder;
 import com.minimall.common.core.domain.Result;
 import com.minimall.order.dto.CreateOrderDTO;
-import com.minimall.order.dto.ShipOrderDTO;
 import com.minimall.order.service.IOrdersService;
 import com.minimall.order.vo.OrderDetailVO;
 import com.minimall.order.vo.OrderListVO;
-import com.rabbitmq.client.Return;
-import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -100,14 +97,12 @@ public class OrdersController {
     //      return Result.success();
     // ─────────────────────────────────────────────────────────────
 
-    /** ⑥ 发货 (admin) - TODO 用户实现 G6.5 */
-    @PutMapping("/{orderId}/ship")
-    public Result<Void> ship(@PathVariable Long orderId,@RequestBody @Valid ShipOrderDTO dto )
-    {
-
-        ordersService.shipOrder(orderId, dto);
-        return Result.success();
-    }
+    // ⑥ 发货接口已删除 (安全修复):
+    //    发货是管理员操作, 已由 AdminOrderController 的 PUT /admin/order/{id}/ship 提供,
+    //    走 /admin/ 前缀受网关 role=1 保护。
+    //    原来这里还挂了个 PUT /order/{orderId}/ship, 没有任何身份校验, 普通用户
+    //    就能给别人的订单发货 —— 垂直越权漏洞。两者调的是同一个 shipOrder(),
+    //    功能完全重复, 所以直接删掉这个挂错位置的入口, 消除攻击面。
 
     /** ⑦ 签收 (用户) - TODO 用户实现 G6.5 */
 

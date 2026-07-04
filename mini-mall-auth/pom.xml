@@ -62,6 +62,12 @@
             <artifactId>sentinel-datasource-nacos</artifactId>
         </dependency>
 
+        <!-- ⭐ 登出黑名单: 把已注销 token 存进 Redis (auth 是 WebMVC, 用同步 StringRedisTemplate) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
         <!-- ⑦ Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

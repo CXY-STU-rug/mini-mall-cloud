@@ -9,6 +9,7 @@ import com.minimall.user.dto.AdminUserPageDTO;
 import com.minimall.user.entity.User;
 import com.minimall.user.mapper.UserMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
@@ -36,6 +37,12 @@ public class AdminUserController {
 
     @Autowired
     private UserMapper userMapper;
+
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
+
+    /** 禁用用户标记前缀 (user 写 / gateway 读, 必须一致) */
+    public static final String USER_DISABLED_PREFIX = "user:disabled:";
 
     // ─── ① 分页 + 条件查询 ─────────────────────────
     @GetMapping("/page")
@@ -79,6 +86,17 @@ public class AdminUserController {
         u.setStatus(status.byteValue());
         u.setUpdateTime(LocalDateTime.now());
         userMapper.updateById(u);
+
+        // ⭐ 禁用即时生效: 改库只挡"下次登录", 挡不住已发出的 7 天 token。
+        //   禁用(0) → 往 Redis 写 user:disabled:{id}, 网关每次校验查它, 命中 403 → 该用户所有在线设备立即失效。
+        //   启用(1) → 删掉这个 key, 恢复正常。
+        //   key 不设 TTL: 禁用是持久状态, 一直有效到管理员启用。
+        String key = USER_DISABLED_PREFIX + id;
+        if (status == 0) {
+            stringRedisTemplate.opsForValue().set(key, "1");
+        } else {
+            stringRedisTemplate.delete(key);
+        }
         return Result.success();
     }
 

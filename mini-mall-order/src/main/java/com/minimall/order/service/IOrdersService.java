@@ -76,4 +76,23 @@ public interface IOrdersService extends IService<Orders> {
      * 越权防护: orders.user_id 必须 = 入参 userId, 否则拒绝
      */
     void signOrder(Long userId, Long orderId);
+
+    /**
+     * 支付回调标记已付款 (payment 服务经 Feign internal 调, 无 userId)。
+     * <p>
+     * 跟 payOrder 的区别:
+     *   - 没有 userId 越权校验 (调用方是 payment 服务, 不是终端用户)
+     *   - 无 Redis 锁: 幂等只靠 CAS(WHERE status=0), 支付宝可能重复回调
+     * 状态机: 0(待付款) → 1(已付款), CAS 命中才算真正首次付款成功。
+     * @return true=本次把订单从待付款改成了已付款; false=订单已不是待付款(已付/已取消/重复回调)
+     */
+    boolean markPaidByNotify(Long orderId);
+
+    /**
+     * 退款成功后标记订单已退款/关闭 (payment 服务 Feign internal 调, 无 userId)。
+     * 状态机: 已付款(1) 或 已发货(2) → 已取消/退款(4), CAS 幂等。
+     * ⚠ V1 从简: 只改订单状态; 生产退款还应回补库存+退券(可复用 cancelOrder 的回补逻辑)。
+     * @return true=本次改成了退款态; false=状态不允许退款或重复请求
+     */
+    boolean markRefundedByNotify(Long orderId);
 }

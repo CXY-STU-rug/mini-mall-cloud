@@ -19,4 +19,11 @@ public class ProductFeignClientFallback implements ProductFeignClient {
         log.warn("服务不可用");   // 用 warn 不用 error: 降级是"预期内的失败", 不是 bug, 没必要触发告警
         return Result.error(404,"服务不可用");
     }
+
+    /** 单查商品的降级: product 不通时返 error, syncById 看到 code!=200 会跳过本次同步(不误删索引)。 */
+    @Override
+    public Result<ProductSource> getById(Long id) {
+        log.warn("[fallback] product 服务不可用, getById 降级 id={}", id);
+        return Result.error(503, "product 服务不可用");
+    }
 }

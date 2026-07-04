@@ -1,0 +1,15 @@
+# ═══════════════════════════════════════════════════════════
+# bootstrap.yml — Spring Cloud 启动期最早读的配置
+# mini-mall-payment 服务
+# ═══════════════════════════════════════════════════════════
+spring:
+  application:
+    name: mini-mall-payment
+
+  cloud:
+    nacos:
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: yaml
+        group: DEFAULT_GROUP
+        namespace: public

@@ -87,8 +87,9 @@ public class AddressController {
             @RequestBody Address address
     ) {
         Long userId= SecurityContextHolder.getUserId();
-        address.setUserId(userId);     // ⭐ 强制盖, 防伪造
-        addressService.save(address);  // MP 自动回填自增 id
+        address.setUserId(userId);       // ⭐ 强制盖, 防伪造
+        address.setIsDefault((byte) 0);  // ⭐ 新地址必为非默认, 设默认走 PUT /address/default (互斥保障)
+        addressService.save(address);    // MP 自动回填自增 id
         return Result.success(address);
     }
 
@@ -106,7 +107,8 @@ public class AddressController {
 
         // 路径里的 id 是权威 id, 强制覆盖
         address.setId(id);
-        address.setUserId(userId);   // 再强制覆盖一次 userId
+        address.setUserId(userId);     // 再强制覆盖一次 userId
+        address.setIsDefault(null);    // ⭐ 改地址内容时不动 is_default: MP 默认 null 字段不更新, 改默认走 PUT /address/default
 
         addressService.updateById(address);
         return Result.success(address);

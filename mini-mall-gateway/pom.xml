@@ -48,6 +48,12 @@
             <artifactId>spring-cloud-alibaba-sentinel-gateway</artifactId>
         </dependency>
 
+        <!-- ⭐ 登出黑名单校验: 网关是 WebFlux, 必须用 reactive 版 Redis (ReactiveStringRedisTemplate) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+
     </dependencies>
 
     <!-- ═══════════════════════════════════════════════════════════

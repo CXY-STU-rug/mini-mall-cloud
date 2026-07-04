@@ -1,0 +1,79 @@
+# ═══════════════════════════════════════════════════════════
+# mini-mall-payment 支付服务配置 (示例 / 模板)
+# 用法: cp application.yml.example application.yml , 然后把 YOUR_XXX 换成真实值
+# ⚠ 真实 application.yml 已被 .gitignore 忽略, 私钥绝不进 git
+# 端口规划: gateway 9080 / user 9001 / product 9002 / order 9003
+#         review 9004 / search 9005 / auth 9006 / file 9007 / payment 9008(新)
+# ═══════════════════════════════════════════════════════════
+server:
+  port: 9008
+
+spring:
+  application:
+    name: mini-mall-payment
+
+  # 连独立支付库 mini_mall_payment (不跟 order 同库)
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/mini_mall_payment?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: YOUR_DB_PASSWORD          # ⭐ 本地默认 123456
+
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8858
+        port: 8725                  # ⭐ 跟 user8719/product8720/gateway8721/order8722/review8723/search8724 错开
+      eager: true
+
+# Feign 熔断降级开关 (调 order 服务用)
+feign:
+  sentinel:
+    enabled: true
+
+# MyBatis-Plus: 下划线转驼峰 + 打印 SQL 便于调试
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+
+# ═══════════════════════════════════════════════════════════
+# ⭐ 支付宝沙箱配置
+#   申请: open.alipay.com → 沙箱 → RSA2 密钥对
+#   三把钥匙的角色:
+#     应用私钥  = 给我方请求签名 (保密! 只放这里, 绝不进 git)
+#     支付宝公钥 = 验支付宝回调的签名 (支付宝平台给的)
+#     应用公钥  = 上传到支付宝平台的 (不放配置文件)
+#   生产环境: 用环境变量 ALIPAY_PRIVATE_KEY 覆盖 (Spring relaxed binding 自动映射到 alipay.private-key)
+# ═══════════════════════════════════════════════════════════
+alipay:
+  # 沙箱应用 APPID
+  app-id: YOUR_ALIPAY_APP_ID
+  # ⭐ 应用私钥 (PKCS#8 格式, 沙箱后台 RSA2 密钥对里的【私钥】那半), 自己保管别提交 git
+  private-key: YOUR_ALIPAY_APP_PRIVATE_KEY
+  # 支付宝公钥 (平台回给你的, 用来验签支付宝的回调)
+  alipay-public-key: YOUR_ALIPAY_PUBLIC_KEY
+  # 沙箱网关
+  gateway-url: https://openapi-sandbox.dl.alipaydev.com/gateway.do
+  # 异步回调地址 (支付宝服务器 → 我方, 必须公网可达, 本地用内网穿透)
+  notify-url: http://TODO_内网穿透域名/pay/notify
+  # 退款异步回调地址
+  refund-notify-url: http://TODO_内网穿透域名/refund/notify
+  # 同步跳回地址 (用户支付完浏览器跳回, 只做展示不可信)
+  return-url: http://localhost:5174/pay/result
+  # 签名类型 / 编码 / 格式 (固定)
+  sign-type: RSA2
+  charset: utf-8
+  format: json
+
+logging:
+  level:
+    com.minimall: debug
+    root: info

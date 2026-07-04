@@ -41,6 +41,8 @@
         <module>mini-mall-auth</module>
         <!-- ⭐ FILE 阶段：对象存储服务 (MinIO 上传商品图/头像/凭证) -->
         <module>mini-mall-file</module>
+        <!-- ⭐ SEC-2 Step2：支付服务 (支付宝沙箱, 支付单/退款单/回调验签幂等) -->
+        <module>mini-mall-payment</module>
 
     </modules>
 

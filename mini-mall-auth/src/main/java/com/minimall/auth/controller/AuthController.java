@@ -10,15 +10,19 @@ import com.minimall.auth.model.User;
 import com.minimall.common.core.domain.Result;
 import com.minimall.common.core.exception.BusinessException;
 import com.minimall.common.security.util.JwtUtil;
+import io.jsonwebtoken.Claims;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 本地账号认证 Controller (从 user 服务 UserController 抽出来)
@@ -44,6 +48,13 @@ public class AuthController {
 
     @Autowired
     private JwtUtil jwtUtil;
+
+    /** 登出黑名单存这里, key 前缀跟网关校验时一致 */
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
+
+    /** 黑名单 key 前缀 (auth 写 / gateway 读, 必须一致) */
+    public static final String BLACKLIST_PREFIX = "jwt:blacklist:";
 
     // ═══════════════════════════════════════════════════════════
     // ① 本地登录
@@ -80,6 +91,15 @@ public class AuthController {
             throw new BusinessException("用户名或密码错误");
         }
 
+        // ②.5 ⭐ SEC-2 禁用账号拦截: status=0(被管理员禁用)不发 token。
+        //    注意顺序: 放在密码校验【之后】——密码不对的人连"账号被禁用"这个信息都不该知道,
+        //    否则可以用这个提示探测"哪些用户名存在且被禁"。
+        //    ⚠ 已知局限: 已发出的 7 天 JWT 无法即时失效(网关只验签名不查库),
+        //      禁用只能挡"下次登录"; 即时踢人要 token 黑名单/短 token+refresh, 列在后续待办。
+        if (user.getStatus() != null && user.getStatus() == 0) {
+            throw new BusinessException(403, "账号已被禁用, 请联系管理员");
+        }
+
         // ③ 签 mini-mall 自家 JWT (ADMIN 阶段: role 一起塞)
         String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getRole());
 
@@ -98,6 +118,40 @@ public class AuthController {
     public Result<AuthResponse> loginFallback(UserLoginDTO dto, Throwable ex) {
         if (ex instanceof RuntimeException re) throw re;
         throw new RuntimeException(ex);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ①.5 登出 (把当前 token 拉黑, 使其在过期前也立即失效)
+    // ═══════════════════════════════════════════════════════════
+    /**
+     * 登出。
+     * <p>
+     * JWT 是无状态的, 平时"登出"只是前端删 token。但删掉的 token 在过期前(7天)仍有效,
+     * 被截获就能重放。这里把它写进 Redis 黑名单, TTL=token 剩余有效期, 网关每次校验时查黑名单,
+     * 命中就 401 → 实现"服务端强制失效"。token 自然过期后黑名单也自动清, 不占空间。
+     * <p>
+     * 说明: /auth/** 在网关白名单里免鉴权放行, 但会原样透传 Authorization 头, 所以这里能拿到 token。
+     */
+    @PostMapping("/logout")
+    public Result<Void> logout(
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        // 没带 token 也算登出成功 (前端删本地即可, 不报错)
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            return Result.success();
+        }
+        String token = authHeader.substring(7);
+        try {
+            // 解析拿过期时间, 算还剩多久 —— 黑名单只需保留到 token 本来的过期点
+            Claims claims = jwtUtil.parseToken(token);
+            long ttl = claims.getExpiration().getTime() - System.currentTimeMillis();
+            if (ttl > 0) {
+                stringRedisTemplate.opsForValue()
+                        .set(BLACKLIST_PREFIX + token, "1", ttl, TimeUnit.MILLISECONDS);
+            }
+        } catch (Exception e) {
+            // token 已过期/本就无效 → 无需拉黑, 直接当登出成功
+        }
+        return Result.success();
     }
 
     // ═══════════════════════════════════════════════════════════

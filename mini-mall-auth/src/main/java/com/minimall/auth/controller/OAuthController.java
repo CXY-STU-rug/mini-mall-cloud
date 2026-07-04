@@ -158,6 +158,12 @@ public class OAuthController {
                 user = createResp.getData();   // user 服务回填的 id
             }
 
+            // ─── 步骤 3.5: ⭐ SEC-2 禁用账号拦截 (跟 AuthController.login 同一条规则) ──
+            //    老账号 OAuth 登录也要查 status: 被禁用的人换 GitHub 登录绕过 = 白禁了
+            if (user.getStatus() != null && user.getStatus() == 0) {
+                throw new BusinessException(403, "账号已被禁用, 请联系管理员");
+            }
+
             // ─── 步骤 4: 签 mini-mall 自家 JWT (ADMIN 阶段: role 一起塞) ──
             String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getRole());
             user.setPassword(null);    // 兜底 (OAuth 用户密码本来就 null, 但保险起见)

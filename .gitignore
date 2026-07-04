@@ -39,6 +39,7 @@ mini-mall-review/src/main/resources/application.yml
 mini-mall-search/src/main/resources/application.yml
 mini-mall-auth/src/main/resources/application.yml
 mini-mall-file/src/main/resources/application.yml
+mini-mall-payment/src/main/resources/application.yml
 
 # --- 临时文件 ---
 *.tmp
