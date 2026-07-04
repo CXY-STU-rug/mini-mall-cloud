@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════
 # mini-mall-ai 配置模板 (示例)
-# 用法: cp application.yml.example application.yml
-# ⚠ 真实 application.yml 已被 .gitignore 忽略 (Task2 起会含 DeepSeek key, 绝不进 git)
+# 用法: cp application.yml.example application.yml , 把 YOUR_XXX 换成真实值
+# ⚠ 真实 application.yml 已被 .gitignore 忽略, DeepSeek key 绝不进 git
+#   生产用环境变量 DEEPSEEK_API_KEY 覆盖 (Spring relaxed binding 自动映射 ai.deepseek.api-key)
 # ═══════════════════════════════════════════════════════════
 server:
   port: 9009
@@ -16,6 +17,20 @@ spring:
         dashboard: 127.0.0.1:8858
         port: 8726
       eager: true
+
+# ⭐ AI 三大基础设施
+ai:
+  deepseek:
+    base-url: https://api.deepseek.com
+    api-key: YOUR_DEEPSEEK_API_KEY
+    model: deepseek-chat
+  ollama:
+    base-url: http://localhost:11434
+    embedding-model: bge-m3
+  redis:
+    host: localhost
+    port: 6380
+    dimension: 1024
 
 logging:
   level:

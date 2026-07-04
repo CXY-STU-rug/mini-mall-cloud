@@ -93,6 +93,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- ⑪ 测试: JUnit5 + AssertJ (Task2 连通性测试用) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <!-- 显式声明 spring-boot-maven-plugin 才能打 fat jar (一条 java -jar 就能跑) -->
