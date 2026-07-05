@@ -62,3 +62,15 @@ spring-boot-*.log
 # --- 第三方 clone 的学习资料 (开源仓库, 不属于本项目, 别误提交) ---
 散笔记/advanced-java-main/
 散笔记/jvm-main/
+
+
+*副本*.docx
+*备份*.docx
+# 本地Maven仓库，必须忽略
+.m2repo/
+~/.m2/
+# 只屏蔽旧目录幽灵docx、备份文档，保留正常笔记
+散笔记/并发编程/*.docx
+*副本*.docx
+*备份*.docx
+*_v*.docx
