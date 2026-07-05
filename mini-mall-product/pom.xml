@@ -79,6 +79,16 @@
             <groupId>com.minimall</groupId>
             <artifactId>mini-mall-common-security</artifactId>
         </dependency>
+
+        <!-- ⭐ SEC-3 新增: Redisson (只为 RBloomFilter 布隆过滤器)
+             注意: 用裸 redisson 而不是 redisson-spring-boot-starter,
+             starter 会接管 RedisConnectionFactory 影响现有 RedisTemplate,
+             裸包 + 手动建 RedissonClient Bean 两套客户端互不干扰 -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <version>3.32.0</version>
+        </dependency>
     </dependencies>
 
     <build>

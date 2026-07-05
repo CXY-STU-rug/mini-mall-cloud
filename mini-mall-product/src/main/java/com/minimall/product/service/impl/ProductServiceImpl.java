@@ -9,6 +9,7 @@ import com.minimall.product.entity.Product;
 import com.minimall.product.mapper.ProductMapper;
 import com.minimall.product.service.IProductService;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RBloomFilter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
@@ -41,11 +42,23 @@ public class ProductServiceImpl
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
 
-    /** 详情: Redis 缓存 → 没中查 MySQL → 回写缓存
-     *  防护: ① 穿透(缓存空值)  ② 雪崩(过期加随机)   [③ 击穿互斥锁 = 下一步 Step 2]
+    // SEC-3: 布隆过滤器 (BloomFilterConfig 里初始化 + 启动预热全量商品 id)
+    @Autowired
+    private RBloomFilter<Long> productBloomFilter;
+
+    /** 详情: 布隆前置拦截 → Redis 缓存 → 没中查 MySQL → 回写缓存
+     *  防护: ⓪ 穿透第一层(布隆挡随机不存在 id)  ① 穿透第二层(缓存空值兜假阳性/已删商品)
+     *        ② 雪崩(过期加随机)  ③ 击穿(互斥锁)
      */
     @Override
     public Product getProductDetail(Long id) {
+        // ⭐ SEC-3 布隆前置拦截: false = 一定不存在, 缓存和 DB 都不用碰
+        //    (true 只是"可能存在", 有 1% 假阳性, 靠下面空值缓存兜底)
+        if (!productBloomFilter.contains(id)) {
+            log.info("布隆拦截(id 一定不存在) id={}", id);
+            return null;
+        }
+
         String key = "product:detail:" + id;
 
         Object cached = redisTemplate.opsForValue().get(key);
@@ -129,6 +142,22 @@ public class ProductServiceImpl
         } catch (Exception e) {
             log.warn("[search-sync] 通知失败(忽略) productId={} err={}", productId, e.getMessage());
         }
+    }
+
+    /**
+     * SEC-3: 重写 save, 新增商品同步写进布隆
+     * 两个入口(ProductController / AdminProductController)都走 service.save, 收口这一处;
+     * super.save 落库后 MP 自动回填自增 id, 才拿得到 getId()
+     * (删除不用管布隆 —— 它删不掉, 已删商品由空值缓存那层兜底)
+     */
+    @Override
+    public boolean save(Product entity) {
+        boolean ok = super.save(entity);
+        if (ok) {
+            productBloomFilter.add(entity.getId());
+            log.info("[布隆同步] 新商品加入布隆 id={}", entity.getId());
+        }
+        return ok;
     }
 
     /** 改 MySQL → 删缓存(下次详情请求会回查 + 重新写) → 通知 ES 对齐 */
