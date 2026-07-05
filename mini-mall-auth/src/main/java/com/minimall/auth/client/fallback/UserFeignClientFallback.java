@@ -25,6 +25,12 @@ public class UserFeignClientFallback implements UserFeignClient {
     }
 
     @Override
+    public Result<User> getByEmail(String email) {
+        log.warn("[Feign-Fallback] (auth→user).getByEmail 降级 email={}", email);
+        return Result.error(503, "用户服务暂不可用");
+    }
+
+    @Override
     public Result<User> getByOauth(String provider, String oauthId) {
         log.warn("[Feign-Fallback] (auth→user).getByOauth 降级 provider={} oauthId={}", provider, oauthId);
         return Result.error(503, "用户服务暂不可用");

@@ -43,6 +43,17 @@ public class UserInternalController {
         return Result.success(userMapper.selectOne(wrapper));
     }
 
+    // ─── ①.5 按 email 查 (EMAIL-1 邮箱验证码登录用) ──────────────
+    @GetMapping("/by-email/{email}")
+    public Result<User> getByEmail(@PathVariable("email") String email) {
+        QueryWrapper<User> wrapper = new QueryWrapper<>();
+        wrapper.eq("email", email);
+        // 同 by-username 约定: 查不到返 success(null), auth 拿 null 决定自动注册
+        // last("LIMIT 1") 兜底: email 列没建唯一索引, 万一历史数据有重复不至于 selectOne 抛异常
+        wrapper.last("LIMIT 1");
+        return Result.success(userMapper.selectOne(wrapper));
+    }
+
     // ─── ② 按 OAuth (provider, oauthId) 查 (OAuth 回调用) ────────
     @GetMapping("/by-oauth/{provider}/{oauthId}")
     public Result<User> getByOauth(@PathVariable("provider") String provider,

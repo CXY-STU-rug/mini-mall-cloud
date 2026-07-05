@@ -36,6 +36,14 @@ public interface UserFeignClient {
     Result<User> getByUsername(@PathVariable("username") String username);
 
     /**
+     * 按邮箱查 (EMAIL-1 邮箱验证码登录用)
+     *
+     * @return 约定同 byUsername: 找到返 user, 找不到返 success(null)
+     */
+    @GetMapping("/user/internal/by-email/{email}")
+    Result<User> getByEmail(@PathVariable("email") String email);
+
+    /**
      * 按 OAuth (provider, oauthId) 查 (OAuth 回调用)
      */
     @GetMapping("/user/internal/by-oauth/{provider}/{oauthId}")

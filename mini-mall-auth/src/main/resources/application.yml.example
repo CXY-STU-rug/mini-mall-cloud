@@ -13,6 +13,31 @@ spring:
   application:
     name: mini-mall-auth
 
+  # ⭐ 登出黑名单 + 邮箱验证码 都存 Redis
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+      timeout: 3000ms
+
+  # ═══════════════════════════════════════════════════════════
+  # ⭐ EMAIL-1: QQ 邮箱 SMTP (邮箱验证码登录)
+  # 授权码获取: QQ邮箱网页版 → 设置 → 账号 → 开启 IMAP/SMTP 服务 → 生成授权码
+  # ═══════════════════════════════════════════════════════════
+  mail:
+    host: smtp.qq.com
+    port: 465                        # SSL 端口
+    username: YOUR_QQ_EMAIL@qq.com   # ⭐ 改这里: 完整 QQ 邮箱
+    password: YOUR_SMTP_AUTH_CODE    # ⭐ 改这里: SMTP 授权码 (不是QQ密码!)
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true             # 465 必须开 SSL
+
   cloud:
     # ⭐ Nacos 服务发现 (auth 既要注册自己, 也要靠它发现 user 服务给 Feign 用)
     nacos:

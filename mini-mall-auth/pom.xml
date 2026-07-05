@@ -87,6 +87,14 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- ⑩ ⭐ EMAIL-1 新增: 发邮件 (邮箱验证码登录用)
+             底层是 JakartaMail(原JavaMail), Spring 包了一层 JavaMailSender,
+             版本由 Spring Boot 父 pom 管理, 不用写 <version> -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
         <!-- ⚠️ 注意: 这里【没有】MyBatis-Plus, 没有 MySQL 驱动
              auth 服务不直接访问数据库, 所有 user 表的读写都通过 Feign 调 user 服务 -->
 
