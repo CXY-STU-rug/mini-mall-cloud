@@ -26,7 +26,7 @@ public interface ISeckillActivityService extends IService<SeckillActivity> {
     List<SeckillActivityVO> listActiveActivities();
 
     /** ③ 秒杀核心入口, 返回抢购结果文案 (实际订单异步生成) */
-    String seckill(Long userId, Long activityId);
+    String seckill(Long userId, Long activityId, Long addressId);
 
     /** ④ 查"我"的秒杀结果, 3 态 SUCCESS/PROCESSING/NOT_FOUND */
     Map<String, Object> querySeckillResult(Long userId, Long activityId);
