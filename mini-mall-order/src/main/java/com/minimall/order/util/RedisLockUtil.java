@@ -23,7 +23,12 @@ import java.util.concurrent.TimeUnit;
  *   ① owner 用 UUID, 防止 A 的锁被 B 误删 (A 锁过期了, B 抢到, 此时 A 跑完去 unlock 不能删 B 的)
  *   ② SET NX + EX 一次完成 (setIfAbsent), 不能 SET + EXPIRE 两步 (两步之间 crash 会死锁)
  *   ③ 释放锁必须 Lua 原子 (GET + DEL 一起做)
+ *
+ * ⚠️ SEC-4 已被 Redisson RLock 替换 (OrdersServiceImpl 三处), 本类保留做学习对照:
+ *   手写版硬伤 = 锁固定 10s 过期, 业务超时后锁失效会放进第二个线程 (UUID 只防误删, 不防并发);
+ *   Redisson 看门狗自动续期解决了这一点, 且 isHeldByCurrentThread 等价 owner 校验
  */
+@Deprecated
 @Component
 public class RedisLockUtil {
 

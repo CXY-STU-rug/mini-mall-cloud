@@ -42,6 +42,17 @@
             <artifactId>mini-mall-common-swagger</artifactId>
         </dependency>
 
+        <!-- ⭐ SEC-4 新增: Redisson (RLock 分布式锁, 替换手写 RedisLockUtil)
+             换的理由: 手写版锁过期业务没跑完时存在并发窗口,
+             Redisson 看门狗后台线程自动续期(默认30s起步)彻底解决;
+             另送可重入 + isHeldByCurrentThread 防误删(等价手写版的 UUID owner 校验)
+             跟 product 一样用裸包, 不用 starter (避免接管 RedisTemplate 连接工厂) -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <version>3.32.0</version>
+        </dependency>
+
         <!-- ② Spring Web (写 @RestController 必备) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

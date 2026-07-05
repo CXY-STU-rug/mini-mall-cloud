@@ -21,7 +21,8 @@ import com.minimall.order.mapper.OrdersMapper;
 import com.minimall.order.service.ICartItemService;
 import com.minimall.order.service.IOrderItemService;
 import com.minimall.order.service.IOrdersService;
-import com.minimall.order.util.RedisLockUtil;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import com.minimall.order.vo.OrderDetailVO;
 import com.minimall.order.vo.OrderItemVO;
 import com.minimall.order.vo.OrderListVO;
@@ -82,7 +83,8 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
     @Autowired private ProductFeignClient productFeignClient;   // 查商品
 
     // ─── 基础设施 ───
-    @Autowired private RedisLockUtil redisLockUtil;
+    // SEC-4: Redisson 替换手写 RedisLockUtil (看门狗续期, 手写版留在 util 包做学习对照)
+    @Autowired private RedissonClient redissonClient;
     @Autowired private TransactionTemplate transactionTemplate; // 控制事务边界 (事务提交后才发 MQ)
     @Autowired private RabbitTemplate rabbitTemplate;
 
@@ -101,10 +103,13 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
         //   - 内部 TransactionTemplate 不动 (它是 order 本地事务,
         //     作为全局事务的一个分支自动管理)
 
-        // 同用户 10 秒内只能下一单 (防重复下单, 防双击)
-        String lockKey = "lock:order:user:" + userId;
-        String owner = redisLockUtil.tryLock(lockKey, 10);
-        if (owner == null) {
+        // 同用户并发下单互斥 (防重复下单, 防双击)
+        // SEC-4: Redisson RLock 替换手写锁
+        //   tryLock() 无参 = 非阻塞, 抢不到立即失败 (语义跟手写版一致)
+        //   不传 leaseTime → 看门狗每 10s 把锁续到 30s, 业务多慢锁都不会中途过期
+        //   (手写版硬伤: 10 秒一到锁没了, 慢请求和新请求并发进临界区)
+        RLock lock = redissonClient.getLock("lock:order:user:" + userId);
+        if (!lock.tryLock()) {
             throw new BusinessException(429, "操作太频繁, 请稍后再试");
         }
 
@@ -286,8 +291,10 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
             return orderResult;
 
         } finally {
-            // 锁必须释放, 否则要等 10 秒 TTL
-            redisLockUtil.unlock(lockKey, owner);
+            // isHeldByCurrentThread = 手写版 "UUID owner 校验" 的 Redisson 等价物, 防解到别人的锁
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -448,10 +455,9 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
     // ════════════════════════════════════════════════════════════
     @Override
     public void cancelOrder(Long userId, Long orderId) {
-        // 订单级锁 (防双击取消)
-        String lockKey = "lock:order:cancel:" + orderId;
-        String owner = redisLockUtil.tryLock(lockKey, 10);
-        if (owner == null) {
+        // 订单级锁 (防双击取消) —— SEC-4: Redisson RLock, 非阻塞 + 看门狗续期
+        RLock lock = redissonClient.getLock("lock:order:cancel:" + orderId);
+        if (!lock.tryLock()) {
             throw new BusinessException(429, "操作太频繁");
         }
         try {
@@ -499,7 +505,9 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
                 return null;
             });
         } finally {
-            redisLockUtil.unlock(lockKey, owner);
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -509,9 +517,9 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
     @Override
     public void payOrder(Long userId, Long orderId) {
         // ⭐ key 用 orderId 而非 userId: 允许同时支付多个订单, 但同一单只能一次
-        String lockKey = "lock:order:pay:" + orderId;
-        String owner = redisLockUtil.tryLock(lockKey, 10);
-        if (owner == null) {
+        //    SEC-4: Redisson RLock, 非阻塞 + 看门狗续期
+        RLock lock = redissonClient.getLock("lock:order:pay:" + orderId);
+        if (!lock.tryLock()) {
             throw new BusinessException(429, "操作太频繁");
         }
         try {
@@ -536,7 +544,9 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
                 return null;
             });
         } finally {
-            redisLockUtil.unlock(lockKey, owner);
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
