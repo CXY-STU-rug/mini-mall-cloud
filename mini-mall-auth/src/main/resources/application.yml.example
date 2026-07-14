@@ -28,8 +28,8 @@ spring:
   mail:
     host: smtp.qq.com
     port: 465                        # SSL 端口
-    username: YOUR_QQ_EMAIL@qq.com   # ⭐ 改这里: 完整 QQ 邮箱
-    password: YOUR_SMTP_AUTH_CODE    # ⭐ 改这里: SMTP 授权码 (不是QQ密码!)
+    username: ${SMTP_USERNAME}       # ⭐ 完整 QQ 邮箱
+    password: ${SMTP_AUTH_CODE}      # ⭐ SMTP 授权码 (不是QQ密码!)
     default-encoding: UTF-8
     properties:
       mail:
@@ -60,7 +60,7 @@ feign:
 # ⭐ JWT 配置 (必须跟 user / gateway 三家用【同一个 secret】, 不然签出来的 token 互验不通过)
 # ═══════════════════════════════════════════════════════════
 jwt:
-  secret: YOUR_JWT_SECRET_AT_LEAST_32_BYTES_LONG   # ⭐ 改这里 (复制 user 服务的 secret)
+  secret: ${JWT_SECRET}   # ⭐ 必须跟 user / gateway 使用同一个值，且至少 32 字节
   expiration: 604800000   # 7 天
 
 # ═══════════════════════════════════════════════════════════
@@ -72,8 +72,8 @@ jwt:
 # ═══════════════════════════════════════════════════════════
 oauth:
   github:
-    client-id: YOUR_GITHUB_CLIENT_ID                # ⭐ 改这里
-    client-secret: YOUR_GITHUB_CLIENT_SECRET        # ⭐ 改这里
+    client-id: ${GITHUB_CLIENT_ID}
+    client-secret: ${GITHUB_CLIENT_SECRET}
     # 必须跟 GitHub OAuth App 里填的 callback URL【完全一致】
     callback-url: http://localhost:9080/auth/oauth/github/callback
     authorize-url: https://github.com/login/oauth/authorize

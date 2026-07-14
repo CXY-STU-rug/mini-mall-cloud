@@ -30,7 +30,7 @@
                   └───────────────┬────────────────┘
                                   ▼
                        ┌───────────────────┐
-                       │  Gateway  :9000   │  统一入口
+                       │  Gateway  :9080   │  统一入口
                        │  Path 路由 + JWT  │  全局过滤器鉴权
                        │  lb:// 负载均衡   │  RequestLogFilter 追踪
                        └─────────┬─────────┘
@@ -77,7 +77,7 @@
 
 | 模块 | 用途 |
 |---|---|
-| **mini-mall-gateway** :9000 | Spring Cloud Gateway, JWT 全局鉴权 + RequestLogFilter |
+| **mini-mall-gateway** :9080 | Spring Cloud Gateway, JWT 全局鉴权 + RequestLogFilter |
 | **mini-mall-common-core** | `Result` / `BusinessException` / `GlobalExceptionHandler` / `SecurityContextHolder` |
 | **mini-mall-common-redis** | 统一 `RedisConfig` (JavaTimeModule) + `RedisService` 工具类 |
 | (规划) common-security | 统一鉴权拦截器 (现各服务自行处理) |
@@ -189,14 +189,14 @@ open http://127.0.0.1:8848/nacos       # 用户/密码: nacos/nacos
 # 期望看到 5 服务 + gateway 全部在线
 
 # 通过网关访问
-curl -X POST http://127.0.0.1:9000/user/login \
+curl -X POST http://127.0.0.1:9080/user/login \
   -H "Content-Type: application/json" \
   -d '{"username":"test","password":"123456"}'
 ```
 
 ---
 
-## 📋 API 一览 (通过网关 :9000)
+## 📋 API 一览 (通过网关 :9080)
 
 > 🔐 = 需要 JWT (Header `Authorization: Bearer <token>`)
 
@@ -293,7 +293,7 @@ H Feign + Sentinel 降级 (统一 Fallback)
 ```
 mini-mall-cloud/
 ├── pom.xml                          # 父 pom (依赖管理 + modules)
-├── mini-mall-gateway/               # 9000 - 网关
+├── mini-mall-gateway/               # 9080 - 网关
 ├── mini-mall-user/                  # 9001 - 用户/认证/地址/券
 ├── mini-mall-product/               # 9002 - 商品/分类/收藏/库存
 ├── mini-mall-order/                 # 9003 - 购物车/订单/秒杀/物流

@@ -36,12 +36,12 @@ spring:
 #          3) bucket 名不变 mini-mall (已建好 + 设公共读)
 # ═══════════════════════════════════════════════════════════
 minio:
-  endpoint: http://127.0.0.1:9010      # MinIO API 端口 (容器 9000 映射到宿主机 9010)
-  access-key: minioadmin               # ⭐ 你填
-  secret-key: minioadmin123            # ⭐ 你填
+  endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:9010}      # MinIO API 端口
+  access-key: ${MINIO_ACCESS_KEY}
+  secret-key: ${MINIO_SECRET_KEY}
   bucket: mini-mall                    # 已建好, 公共读
   # 用户拿到的访问 URL 前缀 (生产应该改成域名 https://cdn.your-domain.com)
-  public-url: http://127.0.0.1:9010/mini-mall
+  public-url: ${MINIO_PUBLIC_URL:http://127.0.0.1:9010/mini-mall}
 
 logging:
   level:

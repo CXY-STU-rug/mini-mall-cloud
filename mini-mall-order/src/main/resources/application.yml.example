@@ -18,17 +18,17 @@ spring:
   # ─── ⭐ MySQL (改成你自己的账号/密码) ────────────────────────
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/mini_mall?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-    username: root
-    password: YOUR_MYSQL_PASSWORD   # ⭐ 改这里
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/mini_mall?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD}
 
   # ─── ⭐ RabbitMQ (改成你自己的账号/密码) ────────────────────
   # 单体 docker-compose 自定义了 admin/<your-password>, 默认是 guest/guest
   rabbitmq:
     host: 127.0.0.1
     port: 5672
-    username: YOUR_RABBITMQ_USER       # ⭐ 改这里 (默认 guest)
-    password: YOUR_RABBITMQ_PASSWORD   # ⭐ 改这里 (默认 guest)
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD}
     virtual-host: /
     listener:
       simple:

@@ -35,9 +35,9 @@ spring:
   # ═════════════════════════════════════════════════════════
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/mini_mall?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-    username: root
-    password: YOUR_MYSQL_PASSWORD   # ⭐ 改这里
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/mini_mall?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD}
 
 # ─── H1: Feign 接入 Sentinel 让 @FeignClient(fallback=) 生效 ─
 feign:
@@ -61,7 +61,7 @@ mybatis-plus:
 # ⭐ JWT 配置 (secret 必须 >= 32 字节, 自己生成随机串)
 # ═══════════════════════════════════════════════════════════
 jwt:
-  secret: YOUR_JWT_SECRET_AT_LEAST_32_BYTES_LONG   # ⭐ 改这里
+  secret: ${JWT_SECRET}   # ⭐ 必须跟 auth / gateway 使用同一个值，且至少 32 字节
   expiration: 604800000   # 7 天
 
 # ⚠️ OAuth 配置 (AUTH 阶段已移到 mini-mall-auth 服务)
