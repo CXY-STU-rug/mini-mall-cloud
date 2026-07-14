@@ -22,6 +22,18 @@ spring:
         dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}
         port: ${SENTINEL_PORT:8721}
       eager: true
+      # G4: 过滤器挪到鉴权后, 避免限流 cancel 与 401 提交的订阅竞态(裸200空响应)
+      filter:
+        order: 0
+      # G4: 限流规则持久化到 Nacos (dataId 里是 GatewayFlowRule 的 JSON 数组)
+      datasource:
+        gw-flow:
+          nacos:
+            server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+            data-id: mini-mall-gateway-gw-flow-rules
+            group-id: SENTINEL_GROUP
+            data-type: json
+            rule-type: gw-flow
 
     gateway:
       routes:
@@ -94,6 +106,11 @@ spring:
           uri: lb://mini-mall-order
           predicates:
             - Path=/admin/order/**
+        # ⭐ 退款改造新增: 客服退款审批 → payment 服务 (挂 /admin/ 前缀强制 role=1)
+        - id: admin-refund-route
+          uri: lb://mini-mall-payment
+          predicates:
+            - Path=/admin/refund/**
 
         - id: file-route
           uri: lb://mini-mall-file
@@ -119,4 +136,4 @@ logging:
 
 jwt:
   # 生产环境必须通过环境变量传入，且与 auth/user 等签发/校验 token 的服务保持一致。
-  secret: ${JWT_SECRET:PLEASE_CHANGE_ME_AT_LEAST_32_BYTES_LONG}
+  secret: ${JWT_SECRET}

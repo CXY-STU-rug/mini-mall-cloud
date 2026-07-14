@@ -48,6 +48,16 @@
             <artifactId>spring-cloud-alibaba-sentinel-gateway</artifactId>
         </dependency>
 
+        <!-- ⭐ G4 新增：Sentinel 规则持久化 (Nacos 数据源)
+             - 没有它: 规则只在控制台内存里, 控制台/网关一重启全丢
+             - 有了它: 网关启动时从 Nacos 拉规则并【订阅变更】, 改 Nacos 配置秒级生效
+             - 数据流向是单向的: Nacos → 网关 (控制台里改的不会写回 Nacos, 规则以 Nacos 为准)
+             - 版本由 spring-cloud-alibaba-dependencies BOM 管理, 不用写 -->
+        <dependency>
+            <groupId>com.alibaba.csp</groupId>
+            <artifactId>sentinel-datasource-nacos</artifactId>
+        </dependency>
+
         <!-- ⭐ 登出黑名单校验: 网关是 WebFlux, 必须用 reactive 版 Redis (ReactiveStringRedisTemplate) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
