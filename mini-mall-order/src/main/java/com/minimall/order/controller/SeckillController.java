@@ -41,6 +41,16 @@ public class SeckillController {
         return Result.success(seckillActivityService.listActiveActivities());
     }
 
+    /**
+     * 预热活动：开抢前把活动起止时间 + 库存写进 Redis，之后抢购入口零 DB。
+     * 生产上由定时任务在活动开始前 N 分钟自动触发；这里暴露手动接口便于压测/运维。
+     */
+    @PostMapping("/preheat/{activityId}")
+    public Result<Void> preheat(@PathVariable Long activityId) {
+        seckillActivityService.preheatActivity(activityId);
+        return Result.success();
+    }
+
     /** 抢购入口：必须带收货地址，成功后异步创建普通订单。 */
     @PostMapping("/{activityId}")
     public Result<String> seckill(

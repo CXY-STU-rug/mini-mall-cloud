@@ -35,4 +35,11 @@ public interface ISeckillActivityService extends IService<SeckillActivity> {
     // ISeckillActivityService
     /** ⑤ 秒杀订单支付 */
     void paySeckillOrder(Long userId, String orderNo);
+
+    /**
+     * ⑥ 预热活动：开抢前把活动的起止时间 + 库存一次性写进 Redis。
+     *    之后抢购入口只读 Redis、零 DB —— 避免 5000 人开抢瞬间一起冲 DB(缓存击穿)。
+     *    生产上由"定时任务在活动开始前 N 分钟"触发，这里同时暴露一个手动接口便于压测。
+     */
+    void preheatActivity(Long activityId);
 }

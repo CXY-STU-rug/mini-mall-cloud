@@ -27,9 +27,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -151,26 +154,36 @@ public class SeckillActivityServiceImpl
             throw new BusinessException(400, "请先选择收货地址");
         }
 
-        SeckillActivity activity = this.getById(activityId);
-        if (activity == null) {
-            throw new BusinessException(404, "活动不存在");
+        // 【第二层优化 · 入口零 DB】
+        //   旧写法：this.getById() 每个请求都查一次 MySQL 活动表拿起止时间/库存 —— 5000 请求 = 5000 次 DB 查询。
+        //   新写法：起止时间在"预热"时已写进 Redis Hash(seckill:activity:{id})，这里只读 Redis。
+        //          读不到 = 未预热(或已过 TTL 结束) → 直接拒；整个入口从此零 DB。
+        String activityKey = "seckill:activity:" + activityId;
+        List<Object> window = stringRedisTemplate.opsForHash()
+                .multiGet(activityKey, Arrays.asList("start", "end"));
+        if (window.get(0) == null || window.get(1) == null) {
+            throw new BusinessException(400, "活动未开始或未预热");
         }
-
-        LocalDateTime now = LocalDateTime.now();
-        if (now.isBefore(activity.getStartTime())) {
+        long nowMs = System.currentTimeMillis();
+        long startMs = Long.parseLong(window.get(0).toString());
+        long endMs = Long.parseLong(window.get(1).toString());
+        if (nowMs < startMs) {
             throw new BusinessException(400, "活动还未开始");
         }
-        if (now.isAfter(activity.getEndTime())) {
+        if (nowMs > endMs) {
             throw new BusinessException(400, "活动已结束");
         }
 
-        Map<String, Object> address = loadAddressSnapshot(addressId);
+        // 【瓶颈优化 · 地址快照下沉】
+        //   旧写法：在这里就 Feign 查地址，5000 个人全都要查一次跨服务，可 99% 会失败(售罄/已抢)，白查。
+        //   压测实测：这次同步 Feign 是秒杀 P95 941ms 的主要瓶颈(Lua 本身是微秒级)。
+        //   新写法：地址查询移到下方"抢中之后"，只有真正抢到名额的人才查 → Feign 调用 5000→100。
+        //   注意：地址查询必须留在当前 HTTP 线程里，不能挪到 MQ 消费端 ——
+        //         越权校验依赖 SecurityContextHolder 里的 userId，消费线程没有登录上下文，挪过去会 403。
 
+        // 库存 key 由预热写入(见 preheatActivity)。Lua 里 "库存 key 不存在 → -2" 正好兜住"未预热"。
         String stockKey = "seckill:stock:" + activityId;
         String boughtKey = "seckill:bought:" + activityId;
-        if (Boolean.FALSE.equals(stringRedisTemplate.hasKey(stockKey))) {
-            stringRedisTemplate.opsForValue().set(stockKey, activity.getStock().toString());
-        }
 
         Long result = stringRedisTemplate.execute(
                 seckillStockScript,
@@ -192,6 +205,16 @@ public class SeckillActivityServiceImpl
         }
 
         if (result == 1L) {
+            // 到这里说明已经抢中(Redis 名额已占)。现在才查地址 —— 只有这 100 个人会走到这。
+            Map<String, Object> address;
+            try {
+                address = loadAddressSnapshot(addressId);
+            } catch (BusinessException e) {
+                // 名额已占，地址却无效：把名额退还，否则这一份库存就少卖了。宁少卖不超卖的另一面——也别白白锁死。
+                rollbackSeckillQuota(activityId, userId);
+                throw e;
+            }
+
             SeckillOrderMessage message = new SeckillOrderMessage();
             message.setActivityId(activityId);
             message.setUserId(userId);
@@ -261,6 +284,36 @@ public class SeckillActivityServiceImpl
     @Transactional(rollbackFor = Exception.class)
     public void paySeckillOrder(Long userId, String orderNo) {
         throw new BusinessException(400, "秒杀订单已改为普通订单支付，请前往订单支付页完成支付");
+    }
+
+    @Override
+    public void preheatActivity(Long activityId) {
+        // 唯一一次 DB 访问：发生在开抢之前的非高并发时刻，把活动信息灌进 Redis。
+        SeckillActivity activity = this.getById(activityId);
+        if (activity == null) {
+            throw new BusinessException(404, "活动不存在");
+        }
+
+        String activityKey = "seckill:activity:" + activityId;
+        String stockKey = "seckill:stock:" + activityId;
+
+        // LocalDateTime → epoch 毫秒：存整数。入口判时间只做整数比较，也绕开 LocalDateTime 的 JSON 序列化坑。
+        long startMs = activity.getStartTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        long endMs = activity.getEndTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+        // 起止时间写进 Redis Hash，供抢购入口零 DB 判定时间窗。
+        Map<String, String> window = new HashMap<>();
+        window.put("start", String.valueOf(startMs));
+        window.put("end", String.valueOf(endMs));
+        stringRedisTemplate.opsForHash().putAll(activityKey, window);
+
+        // 库存计数器用 setIfAbsent：重复预热不会把"已经被抢掉的库存"重置回满，避免二次开卖。
+        stringRedisTemplate.opsForValue().setIfAbsent(stockKey, activity.getStock().toString());
+
+        // 两个 key 都在活动结束时自动过期，避免废弃的秒杀键长期堆在 Redis。
+        Date expireAt = Date.from(Instant.ofEpochMilli(endMs));
+        stringRedisTemplate.expireAt(activityKey, expireAt);
+        stringRedisTemplate.expireAt(stockKey, expireAt);
     }
 
     private Map<String, Object> loadAddressSnapshot(Long addressId) {
