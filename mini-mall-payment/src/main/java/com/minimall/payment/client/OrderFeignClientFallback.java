@@ -20,6 +20,12 @@ public class OrderFeignClientFallback implements OrderFeignClient {
     }
 
     @Override
+    public Result<OrderInfo> getInternalOrder(Long orderId) {
+        log.warn("[fallback] order service unavailable, query internal order failed orderId={}", orderId);
+        return Result.error(503, "订单服务不可用");
+    }
+
+    @Override
     public Result<Boolean> markPaid(Long orderId) {
         // ⚠ 通知失败是"钱到账了但订单没改状态"的严重不一致, 必须 error 让上层记下来补偿, 不能吞
         log.error("[fallback] order 服务不可用, 标记已付款失败 orderId={} (需人工/对账补偿)", orderId);
@@ -27,8 +33,20 @@ public class OrderFeignClientFallback implements OrderFeignClient {
     }
 
     @Override
+    public Result<Integer> markRefundApplying(Long orderId) {
+        log.warn("[fallback] order 服务不可用, 申请退款失败 orderId={}", orderId);
+        return Result.error(503, "订单服务不可用");
+    }
+
+    @Override
     public Result<Boolean> markRefunded(Long orderId) {
         log.error("[fallback] order 服务不可用, 标记退款失败 orderId={} (需人工/对账补偿)", orderId);
+        return Result.error(503, "订单服务不可用");
+    }
+
+    @Override
+    public Result<Boolean> markRefundReject(Long orderId, Integer preStatus) {
+        log.error("[fallback] order 服务不可用, 拒绝退款回滚失败 orderId={} (需人工补偿)", orderId);
         return Result.error(503, "订单服务不可用");
     }
 }

@@ -42,8 +42,11 @@ public class Refund implements Serializable {
     /** 退款原因 */
     private String reason;
 
-    /** 退款状态: 0申请中 1处理中 2成功 3失败 */
+    /** 退款状态: 0待客服审批 1处理中 2成功 3失败 4已拒绝 */
     private Byte status;
+
+    /** 退款前的订单状态(1已付款/2已发货), 客服拒绝时回滚订单用 */
+    private Integer preOrderStatus;
 
     /** 支付宝退款流水号 */
     private String refundTradeNo;

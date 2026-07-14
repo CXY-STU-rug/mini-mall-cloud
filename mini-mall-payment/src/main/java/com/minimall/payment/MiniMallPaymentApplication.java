@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.context.annotation.ComponentScan;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * mini-mall-payment 支付服务启动类
@@ -19,6 +20,7 @@ import org.mybatis.spring.annotation.MapperScan;
 @ComponentScan("com.minimall")
 @MapperScan("com.minimall.payment.mapper")
 @EnableFeignClients(basePackages = "com.minimall.payment.client")
+@EnableScheduling
 public class MiniMallPaymentApplication {
 
     public static void main(String[] args) {
