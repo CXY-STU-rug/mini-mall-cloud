@@ -83,7 +83,7 @@ public class RabbitMQConfig {
     @Bean
     public Queue delayQueue() {
         Map<String, Object> args = new HashMap<>();
-        args.put("x-message-ttl", 30000);                        // ⏱ 30 秒 (上线后改 30 分钟 = 1800000)
+        args.put("x-message-ttl", 1800000);                      // ⏱ 30 分钟 (原 30000=30秒 太短, 真实支付来不及, 会出现"付款成功但订单已超时关单"的资损)
         args.put("x-dead-letter-exchange", CLOSE_EXCHANGE);      // 💀 死信转发到关单交换机
         args.put("x-dead-letter-routing-key", CLOSE_ROUTING_KEY);// 💀 死信带的 routingKey
 

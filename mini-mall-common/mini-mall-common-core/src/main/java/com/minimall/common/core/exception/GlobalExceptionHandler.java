@@ -10,6 +10,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
  * 全局异常处理器
@@ -78,6 +79,26 @@ public class GlobalExceptionHandler {
                 ? fieldError.getField() + " " + fieldError.getDefaultMessage()
                 : "参数绑定失败";
         log.warn("[参数绑定失败] {}", message);
+        return Result.error(400, message);
+    }
+
+    /**
+     * 处理 ③.5 路径/Query 参数类型不匹配（如 /order/{orderId} 传了 "NaN"、"abc"）
+     *
+     * 触发场景：
+     *   Controller 签名 detail(@PathVariable Long orderId)，前端却请求 /order/NaN
+     *   Spring 无法把字符串 "NaN" 转成 Long → 抛 MethodArgumentTypeMismatchException
+     *
+     * 为什么单独处理：
+     *   这【不是系统故障】，是前端传了非法参数。若落到 ④ 兜底会返回 500"系统繁忙"，
+     *   既吓人又误导排查。这里明确返回 400 + 哪个参数、什么非法值，一眼定位是前端问题。
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public Result<Void> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
+        String name = e.getName();          // 参数名，如 orderId
+        Object value = e.getValue();        // 前端传来的非法值，如 "NaN"
+        String message = "参数 " + name + " 格式非法: " + value;
+        log.warn("[参数类型不匹配] {}", message);
         return Result.error(400, message);
     }
 

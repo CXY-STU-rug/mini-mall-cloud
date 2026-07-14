@@ -23,7 +23,7 @@ import java.io.IOException;
  *           │ rabbitTemplate.convertAndSend    │
  *           │      delay/<orderId>             │
  *           ▼                                  ▼
- *   ┌─ delay.queue ──┐                  TTL=30s
+ *   ┌─ delay.queue ──┐                  TTL=30min
  *   │                │       消息在这里待 30 秒, 没消费者
  *   └────────┬───────┘
  *            │ TTL 到期 → 死信

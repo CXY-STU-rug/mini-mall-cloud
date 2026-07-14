@@ -370,6 +370,8 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
             case 2:  return "已发货";
             case 3:  return "已完成";
             case 4:  return "已取消";
+            case 5:  return "申请退款中";   // 退款改造: 已提交退款申请, 等客服审批
+            case 6:  return "已退款";       // 退款改造: 客服批准 + 支付宝已退款
             default: return "未知";
         }
     }
@@ -619,17 +621,100 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
     // ⑥.6 退款成功标记订单退款/关闭 (payment 服务 Feign internal 调)
     // ════════════════════════════════════════════════════════════
     @Override
-    @Transactional(rollbackFor = Exception.class)
-    public boolean markRefundedByNotify(Long orderId) {
-        // CAS: 已付款(1)或已发货(2) → 已取消(4)。in 条件让"发货后退款"也能覆盖。
-        // 待付款(0)不该走退款(它走的是取消); 已完成(3)/已取消(4)不动。
+    public Integer markRefundApplying(Long orderId) {
+        // 用户申请退款: 把订单从"已付款(1)/已发货(2)"打成"申请退款中(5)", 等客服审批。
+        // ⚠ 这里【不退钱、不回补库存】—— 只是标记"进入退款流程", 钱和库存等审批通过再动。
+        Orders order = ordersMapper.selectById(orderId);
+        if (order == null) {
+            return null;
+        }
+        Byte cur = order.getStatus();
+        // 只有"已付款/已发货"能申请退款; 其它状态(待付款走取消, 已完成/已取消/已在退款中)一律拒绝
+        if (cur == null || (cur != OrderStatus.PAID && cur != OrderStatus.SHIPPED)) {
+            return null;
+        }
+        // CAS: status 还在 1 或 2 才改成 5, 防并发重复申请
         LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
         uw.eq(Orders::getId, orderId)
           .in(Orders::getStatus, OrderStatus.PAID, OrderStatus.SHIPPED)
-          .set(Orders::getStatus, OrderStatus.CANCELLED);
+          .set(Orders::getStatus, OrderStatus.REFUND_APPLYING);
         int rows = ordersMapper.update(null, uw);
-        // ⚠ V1 从简: 这里没回补库存/退券。生产应像 cancelOrder 那样查明细逐个 restoreStock + 退券。
-        return rows == 1;
+        if (rows == 0) {
+            return null;   // 并发下已被别的请求抢先, 视为失败
+        }
+        // ⭐ 返回"退款前的原状态"(1 或 2): 客服若拒绝, payment 会拿它回滚订单到原状态
+        return cur.intValue();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean markRefundedByNotify(Long orderId) {
+        // 客服批准 + 支付宝退款成功后调这里: 把订单从"申请退款中(5)"落定为"已退款(6)"。
+        Orders order = ordersMapper.selectById(orderId);
+        if (order == null) {
+            return false;
+        }
+
+        // CAS: 只有"申请退款中(5)"才能改成"已退款(6)", 幂等(重复通知只成功一次)。
+        // 需求3 关键改动: 目标从 CANCELLED(4) 改成 REFUNDED(6), 退款不再显示成"已取消"。
+        LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+        uw.eq(Orders::getId, orderId)
+          .eq(Orders::getStatus, OrderStatus.REFUND_APPLYING)
+          .set(Orders::getStatus, OrderStatus.REFUNDED);
+        int rows = ordersMapper.update(null, uw);
+        if (rows == 0) {
+            return false;
+        }
+        // 真正退款了才回补库存 + 退券(申请阶段不做, 拒绝了就不该补)
+        restoreStockForOrder(orderId);
+        refundCouponAfterCommit(order.getUserCouponId());
+        return true;
+    }
+
+    @Override
+    public boolean markRefundReject(Long orderId, Integer preStatus) {
+        // 客服拒绝退款: 把订单从"申请退款中(5)"回滚到申请前的原状态(1 已付款 / 2 已发货)。
+        // preStatus 由 payment 从退款单的 pre_order_status 带过来, 保证回滚到正确的状态。
+        if (preStatus == null) {
+            preStatus = (int) OrderStatus.PAID;   // 兜底: 万一没记住原状态, 至少回到"已付款"
+        }
+        LambdaUpdateWrapper<Orders> uw = new LambdaUpdateWrapper<>();
+        uw.eq(Orders::getId, orderId)
+          .eq(Orders::getStatus, OrderStatus.REFUND_APPLYING)   // 只回滚仍在"申请退款中"的
+          .set(Orders::getStatus, preStatus.byteValue());
+        int rows = ordersMapper.update(null, uw);
+        return rows > 0;
+    }
+
+    private void restoreStockForOrder(Long orderId) {
+        QueryWrapper<OrderItem> itemW = new QueryWrapper<>();
+        itemW.eq("order_id", orderId);
+        List<OrderItem> items = orderItemMapper.selectList(itemW);
+        for (OrderItem item : items) {
+            Result<Integer> resp = productFeignClient.restoreStock(item.getProductId(), item.getQuantity());
+            if (resp == null || resp.getCode() == null || resp.getCode() != 200) {
+                throw new BusinessException(500, "退款回补库存失败");
+            }
+        }
+    }
+
+    private void refundCouponAfterCommit(Long userCouponId) {
+        if (userCouponId == null) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    Result<Void> resp = userFeignClient.refundCoupon(userCouponId);
+                    if (resp == null || resp.getCode() == null || resp.getCode() != 200) {
+                        System.err.println("[refund-coupon] failed ucId=" + userCouponId);
+                    }
+                } catch (Exception e) {
+                    System.err.println("[refund-coupon] exception ucId=" + userCouponId + " err=" + e.getMessage());
+                }
+            }
+        });
     }
 
     // ════════════════════════════════════════════════════════════
@@ -702,4 +787,3 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
         }
     }
 }
-

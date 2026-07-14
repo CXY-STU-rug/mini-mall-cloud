@@ -89,10 +89,24 @@ public interface IOrdersService extends IService<Orders> {
     boolean markPaidByNotify(Long orderId);
 
     /**
-     * 退款成功后标记订单已退款/关闭 (payment 服务 Feign internal 调, 无 userId)。
-     * 状态机: 已付款(1) 或 已发货(2) → 已取消/退款(4), CAS 幂等。
-     * ⚠ V1 从简: 只改订单状态; 生产退款还应回补库存+退券(可复用 cancelOrder 的回补逻辑)。
-     * @return true=本次改成了退款态; false=状态不允许退款或重复请求
+     * 用户申请退款: 订单 已付款(1)/已发货(2) → 申请退款中(5), 等客服审批。
+     * 只标记状态, 不退钱、不回补库存。
+     * @return 退款前的原状态(1 或 2, 供客服拒绝时回滚); null=订单不存在或状态不允许申请
+     */
+    Integer markRefundApplying(Long orderId);
+
+    /**
+     * 客服批准 + 支付宝退款成功后标记订单已退款 (payment 服务 Feign internal 调, 无 userId)。
+     * 状态机: 申请退款中(5) → 已退款(6), CAS 幂等。此时才回补库存 + 退券。
+     * ⚠ 需求改造: 目标状态由原来的 已取消(4) 改为 已退款(6), 退款不再被显示成"已取消"。
+     * @return true=本次改成了已退款; false=状态不允许或重复请求
      */
     boolean markRefundedByNotify(Long orderId);
+
+    /**
+     * 客服拒绝退款: 订单 申请退款中(5) → 回滚到申请前的原状态(preStatus, 一般是 1 或 2)。
+     * @param preStatus 退款前的原状态(payment 从退款单 pre_order_status 带过来)
+     * @return true=回滚成功; false=订单已不在"申请退款中"
+     */
+    boolean markRefundReject(Long orderId, Integer preStatus);
 }
