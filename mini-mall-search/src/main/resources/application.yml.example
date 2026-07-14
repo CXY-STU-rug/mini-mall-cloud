@@ -9,6 +9,19 @@ spring:
   application:
     name: mini-mall-search
 
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD}
+    virtual-host: /
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 1
+        retry:
+          enabled: false
+
   # ES 配置 (search 独有)
   elasticsearch:
     uris: http://127.0.0.1:9200

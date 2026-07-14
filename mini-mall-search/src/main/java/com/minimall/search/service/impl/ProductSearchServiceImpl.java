@@ -70,8 +70,17 @@ public class ProductSearchServiceImpl implements IProductSearchService {
                 .map(ProductDocument::from)
                 .toList();
 
-        // 4. 批量灌进 ES (saveAll 是 upsert: 有则覆盖, 无则插入)
-        repository.saveAll(documents);
+        // 4. 分批灌进 ES (saveAll 是 upsert: 有则覆盖, 无则插入)
+        //    ⚠ 为什么要分批: saveAll 会把整个 List 拼成一个 bulk 请求一次发出。
+        //    10 万商品 ≈ 55MB, 超过 ES 的写入压力保护阈值(默认=堆内存 10%, 512M 堆 → 53.6MB),
+        //    ES 直接回 429 es_rejected_execution_exception 拒收 —— 这是压测灌数时真实炸出来的坑。
+        //    每批 5000 条 ≈ 3MB, 远低于阈值, 且批次间给 ES 留出消化时间。
+        final int batchSize = 5000;
+        for (int from = 0; from < documents.size(); from += batchSize) {
+            int to = Math.min(from + batchSize, documents.size());
+            repository.saveAll(documents.subList(from, to));   // subList 是视图不复制数据
+            log.info("[search-sync] 已写入 {}/{} 条", to, documents.size());
+        }
 
         log.info("[search-sync] 全量同步完成, 共 {} 条", documents.size());
         return documents.size();

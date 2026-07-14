@@ -8,6 +8,13 @@ spring:
   application:
     name: mini-mall-product
 
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD}
+    virtual-host: /
+
   # ─── G3.5 新增: Redis 连接配置 (Favorite 用 Redis Set) ─────────
   data:
     redis:
@@ -38,9 +45,9 @@ spring:
   # ⭐ MySQL (改成你自己的账号/密码)
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/mini_mall?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-    username: root
-    password: YOUR_MYSQL_PASSWORD   # ⭐ 改这里
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/mini_mall?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD}
 
 # ─── G5: Seata 客户端 (分支事务 RM) ────────────────────────
 seata:

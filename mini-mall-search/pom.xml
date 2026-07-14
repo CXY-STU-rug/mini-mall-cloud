@@ -30,6 +30,10 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-amqp</artifactId>
+    </dependency>
     <!-- ES 8.x 客户端 + Spring Data Repository,Boot 3.3.5 自带,不写 version -->
     <dependency>
         <groupId>org.springframework.boot</groupId>

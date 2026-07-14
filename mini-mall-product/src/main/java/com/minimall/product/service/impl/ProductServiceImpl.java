@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.minimall.product.config.ProductSearchMQConfig;
 import com.minimall.product.entity.Product;
 import com.minimall.product.mapper.ProductMapper;
 import com.minimall.product.service.IProductService;
@@ -12,10 +13,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RLock;                    // SEC-4: 击穿互斥锁写法二用
 import org.redisson.api.RedissonClient;           // SEC-4: 复用布隆那个 RedissonClient Bean
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
@@ -142,19 +146,33 @@ public class ProductServiceImpl
         }
     }
 
-    // SEC-2: 商品变更后通知 search 服务对齐 ES 索引 (上下架联动)
+    // SEC-2: 商品变更后发 MQ，让 search 服务异步对齐 ES 索引 (上下架/库存联动)
     @Autowired
-    private com.minimall.product.client.SearchFeignClient searchFeignClient;
+    private RabbitTemplate rabbitTemplate;
 
-    /**
-     * SEC-2 辅助: 通知 search 增量同步, 失败只记日志绝不抛
-     * —— 搜索同步是从流程, 挂了不能拖垮商品管理主流程 (最坏靠全量 /search/sync 兜底)。
-     */
-    private void notifySearchSync(Long productId) {
-        try {
-            searchFeignClient.syncById(productId);
-        } catch (Exception e) {
-            log.warn("[search-sync] 通知失败(忽略) productId={} err={}", productId, e.getMessage());
+    private void publishSearchSyncEvent(Long productId, String routingKey) {
+        if (productId == null) {
+            return;
+        }
+        Runnable publisher = () -> {
+            try {
+                rabbitTemplate.convertAndSend(ProductSearchMQConfig.EXCHANGE, routingKey, productId.toString());
+                log.info("[search-sync-mq] published routingKey={} productId={}", routingKey, productId);
+            } catch (Exception e) {
+                log.warn("[search-sync-mq] publish failed routingKey={} productId={} err={}",
+                        routingKey, productId, e.getMessage());
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    publisher.run();
+                }
+            });
+        } else {
+            publisher.run();
         }
     }
 
@@ -170,6 +188,7 @@ public class ProductServiceImpl
         if (ok) {
             productBloomFilter.add(entity.getId());
             log.info("[布隆同步] 新商品加入布隆 id={}", entity.getId());
+            publishSearchSyncEvent(entity.getId(), ProductSearchMQConfig.ROUTING_KEY_UPDATED);
         }
         return ok;
     }
@@ -184,7 +203,7 @@ public class ProductServiceImpl
             // ⭐ SEC-2: 编辑/上架/下架 共用本方法 → 通知 search 回查最新状态,
             //    上架→upsert 进索引, 下架→从索引删, 让"搜索结果"跟"数据库"对齐。
             //    顺序注意: 必须放在删缓存【之后】, search 回查 /product/{id} 才拿得到新数据。
-            notifySearchSync(product.getId());
+            publishSearchSyncEvent(product.getId(), ProductSearchMQConfig.ROUTING_KEY_UPDATED);
         }
         return ok;
     }
@@ -196,12 +215,8 @@ public class ProductServiceImpl
         if (ok) {
             redisTemplate.delete("product:detail:" + id);
             log.info("缓存已删除 key=product:detail:{}", id);
-            // ⭐ SEC-2: 已删商品不该再被搜到, 直接从索引删 (失败同样只记日志)
-            try {
-                searchFeignClient.deleteById(id);
-            } catch (Exception e) {
-                log.warn("[search-sync] 索引删除失败(忽略) productId={} err={}", id, e.getMessage());
-            }
+            // ⭐ SEC-2: 已删商品不该再被搜到, 发 MQ 让 search 从索引删除
+            publishSearchSyncEvent(id, ProductSearchMQConfig.ROUTING_KEY_DELETED);
         }
         return ok;
     }
@@ -240,6 +255,7 @@ public class ProductServiceImpl
         if (rows > 0) {
             redisTemplate.delete("product:detail:" + productId);
             log.info("扣库存成功 productId={} qty={}", productId, quantity);
+            publishSearchSyncEvent(productId, ProductSearchMQConfig.ROUTING_KEY_UPDATED);
         } else {
             log.warn("扣库存失败(库存不足) productId={} qty={}", productId, quantity);
         }
@@ -253,6 +269,7 @@ public class ProductServiceImpl
         if (rows > 0) {
             redisTemplate.delete("product:detail:" + productId);
             log.info("回库存成功 productId={} qty={}", productId, quantity);
+            publishSearchSyncEvent(productId, ProductSearchMQConfig.ROUTING_KEY_UPDATED);
         }
         return rows;
     }
