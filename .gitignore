@@ -74,3 +74,6 @@ spring-boot-*.log
 *副本*.docx
 *备份*.docx
 *_v*.docx
+
+# 压测原始结果(JMeter 逐条记录)——体积大、可再生，不进 git；保留 .jmx 脚本和 压测结果记录.md
+*.jtl
