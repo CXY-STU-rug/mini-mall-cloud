@@ -1,6 +1,6 @@
 # mini-mall-cloud
 
-> Spring Cloud Alibaba 微服务电商项目 —— 从单体 [`mini-mall`](https://github.com/CXY-STU-rug/mini-mall) 重构而来,**5 个业务服务 + 1 网关 + 3 个 common 库**,完整覆盖电商核心闭环.
+> Spring Cloud Alibaba 微服务电商项目 —— 从单体 [`mini-mall`](https://github.com/CXY-STU-rug/mini-mall) 重构而来,**7 个业务服务 + 1 网关 + 2 个 common 库**,完整覆盖电商核心闭环 + 支付退款 + AI 客服.
 
 [![Java](https://img.shields.io/badge/Java-21-007396?logo=openjdk)](https://openjdk.org/projects/jdk/21/)
 [![Spring Boot](https://img.shields.io/badge/SpringBoot-3.3.5-6DB33F?logo=springboot)](https://spring.io/projects/spring-boot)
@@ -15,9 +15,10 @@
 一个**完整可跑、教学导向**的 Spring Cloud 微服务电商项目.覆盖了一个真实电商需要的核心业务模块和分布式基础设施.
 
 **特点**:
-- ✅ 业务闭环 100% (用户/商品/订单/库存/物流/评价/优惠券/秒杀/搜索)
-- ✅ 分布式三件套全接入 (Nacos / Sentinel / Seata)
-- ✅ 真实业务流程 (扣库存 / 用券 / 退券 / Cache Aside 评分回写 / Lua 秒杀)
+- ✅ 业务闭环 100% (用户/商品/订单/库存/物流/评价/优惠券/秒杀/搜索/**支付/退款**)
+- ✅ 分布式三件套全接入 (Nacos / Sentinel / Seata) + **SkyWalking 全链路追踪**
+- ✅ 真实业务流程 (扣库存 / 用券 / 退券 / Cache Aside 评分回写 / Lua 秒杀 / **支付宝支付 + 对账 + 两阶段退款审批**)
+- ✅ **AI 客服 Agent** (LangChain4j, 多轮对话记忆, 可查订单/退款)
 - ✅ 详细中文笔记 (近 12000 行 markdown 学习记录, 每个里程碑都有原理 + 踩坑)
 
 ---
@@ -34,16 +35,16 @@
                        │  Path 路由 + JWT  │  全局过滤器鉴权
                        │  lb:// 负载均衡   │  RequestLogFilter 追踪
                        └─────────┬─────────┘
-              ┌─────────┬────────┼────────┬─────────┐
-              ▼         ▼        ▼        ▼         ▼
-        ┌─────────┐┌─────────┐┌──────┐┌──────┐┌────────┐
-        │ user    ││ product ││order ││review││ search │
-        │ :9001   ││ :9002   ││:9003 ││:9004 ││ :9005  │
-        │登录/JWT ││商品/库存││购物车││ 评分 ││  ES    │
-        │地址/券  ││分类/收藏││订单  ││ 回写 ││ 搜索   │
-        │         ││        ││秒杀  ││      ││        │
-        └────┬────┘└────┬───┘└───┬──┘└───┬──┘└────┬───┘
-             └──────────┴────────┴───────┴─────────┘
+        ┌──────┬──────┬──────┬───┼───┬──────┬──────┐
+        ▼      ▼      ▼      ▼   ▼   ▼      ▼      ▼
+     ┌──────┐┌──────┐┌──────┐┌─────┐┌─────┐┌──────┐┌──────┐
+     │ user ││produc││order ││revie││searc││ pay  ││  ai  │
+     │:9001 ││:9002 ││:9003 ││:9004││:9005││:9008 ││:9009 │
+     │登录  ││商品  ││购物车││评分 ││ ES  ││支付宝││客服  │
+     │JWT券 ││库存  ││订单  ││回写 ││搜索 ││对账  ││Agent │
+     │地址  ││收藏  ││秒杀锁││     ││     ││退款  ││LC4j  │
+     └───┬──┘└───┬──┘└───┬──┘└──┬──┘└──┬──┘└───┬──┘└───┬──┘
+         └───────┴───────┴──────┴──────┴───────┴───────┘
                                   │
               ┌───────────────────┼───────────────────┐
               ▼                   ▼                   ▼
@@ -53,27 +54,29 @@
        │ 配置中心    │    │ 规则持久化   │    │  AT 模式     │
        └─────────────┘    └──────────────┘    └──────────────┘
 
-       ┌───────────┐ ┌───────────┐ ┌────────┐ ┌──────────┐
-       │MySQL :3306│ │Redis :6379│ │ES :9200│ │MQ :5672  │
-       │  业务库   │ │  缓存     │ │ 搜索   │ │ 异步消息 │
-       └───────────┘ └───────────┘ └────────┘ └──────────┘
+       ┌───────────┐ ┌───────────┐ ┌────────┐ ┌──────────┐ ┌────────────────┐
+       │MySQL :3306│ │Redis :6379│ │ES :9200│ │MQ :5672  │ │SkyWalking:18080│
+       │  业务库   │ │缓存/分布锁│ │ 搜索   │ │ 异步消息 │ │  全链路追踪    │
+       └───────────┘ └───────────┘ └────────┘ └──────────┘ └────────────────┘
 ```
 
 ---
 
 ## 🎯 模块清单
 
-### 业务服务 (5 个)
+### 业务服务 (7 个)
 
 | 服务 | 端口 | 业务 | 核心特性 |
 |---|---|---|---|
 | **mini-mall-user** | 9001 | 用户/认证/地址/优惠券 | JWT 登录, 5 种券领用/抵扣/退还 |
 | **mini-mall-product** | 9002 | 商品/分类/收藏/库存 | Cache Aside, internal 扣/回库存端点 |
-| **mini-mall-order** | 9003 | 购物车/订单/秒杀/物流 | Seata 全局事务, MQ 异步关单, Lua 秒杀, 7 天定时签收 |
+| **mini-mall-order** | 9003 | 购物车/订单/秒杀/物流 | Seata 全局事务, **Redisson 分布式锁**, MQ 异步关单, Lua 秒杀, 7 天定时签收 |
 | **mini-mall-review** | 9004 | 评价 + 商品评分回写 | afterCommit 跨服务回写, Feign 反向调用 |
-| **mini-mall-search** | 9005 | ES 商品搜索 | BoolQuery (must/filter), 5 种排序, 全量同步 |
+| **mini-mall-search** | 9005 | ES 商品搜索 | BoolQuery (must/filter), 5 种排序, **MQ 异步增量同步** |
+| **mini-mall-payment** | 9008 | 支付/退款/对账 | 支付宝沙箱支付, 定时对账补偿, **两阶段退款审批** (申请→客服审批) |
+| **mini-mall-ai** | 9009 | AI 客服 Agent | LangChain4j, 多轮对话记忆, Feign 查订单/退款 |
 
-### 基础设施 (1 + 3)
+### 基础设施 (1 + 2)
 
 | 模块 | 用途 |
 |---|---|
@@ -100,9 +103,14 @@
 
 **存储 / 消息**
 - MySQL 8.0 — 业务库
-- Redis 7.x — 缓存 + Lua 秒杀脚本
-- RabbitMQ 3.x — 异步消息 (订单超时关单 + 秒杀异步下单 + 评价通知)
+- Redis 7.x — 缓存 + Lua 秒杀脚本 + Redisson 分布式锁
+- RabbitMQ 3.x — 异步消息 (订单超时关单 + 秒杀异步下单 + 评价通知 + 搜索增量同步 + 退款/对账事件)
 - Elasticsearch 8.13.4 + Kibana — 商品搜索
+
+**支付 / AI / 监控**
+- 支付宝 SDK (沙箱环境) — 下单 / 异步回调验签 / 定时对账补偿
+- LangChain4j — AI 客服 Agent (OpenAI 兼容接口调 DeepSeek + 本地 Ollama, 多轮对话记忆)
+- SkyWalking 9.x — 全链路追踪 (Agent 探针 + OAP + UI :18080)
 
 ---
 
@@ -156,7 +164,7 @@ mysql -uroot -p < sql/seata.sql
 
 ```bash
 cd mini-mall-cloud
-for svc in user product order review search gateway; do
+for svc in user product order review search payment ai gateway; do
   cp mini-mall-$svc/src/main/resources/application.yml.example \
      mini-mall-$svc/src/main/resources/application.yml
 done
@@ -178,6 +186,8 @@ java -jar mini-mall-product/target/mini-mall-product-0.0.1-SNAPSHOT.jar
 java -jar mini-mall-order/target/mini-mall-order-0.0.1-SNAPSHOT.jar
 java -jar mini-mall-review/target/mini-mall-review-0.0.1-SNAPSHOT.jar
 java -jar mini-mall-search/target/mini-mall-search-0.0.1-SNAPSHOT.jar
+java -jar mini-mall-payment/target/mini-mall-payment-0.0.1-SNAPSHOT.jar
+java -jar mini-mall-ai/target/mini-mall-ai-0.0.1-SNAPSHOT.jar
 java -jar mini-mall-gateway/target/mini-mall-gateway-0.0.1-SNAPSHOT.jar
 ```
 
@@ -186,7 +196,7 @@ java -jar mini-mall-gateway/target/mini-mall-gateway-0.0.1-SNAPSHOT.jar
 ```bash
 # Nacos 控制台
 open http://127.0.0.1:8848/nacos       # 用户/密码: nacos/nacos
-# 期望看到 5 服务 + gateway 全部在线
+# 期望看到 7 服务 (user/product/order/review/search/payment/ai) + gateway 全部在线
 
 # 通过网关访问
 curl -X POST http://127.0.0.1:9080/user/login \
@@ -249,9 +259,36 @@ curl -X POST http://127.0.0.1:9080/user/login \
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/search/sync` | 全量同步 product → ES (运维) |
+| POST | `/search/sync` | 全量同步 product → ES (运维, 初始化用) |
 | GET | `/search/product` | 关键词 + 分类 + 价格区间 + 5 种排序 |
 | DELETE | `/search/{productId}` | 单条删除 |
+
+> 日常商品增删改由 product 服务发 MQ 消息, search 监听后**异步增量同步**到 ES, 无需手动调 `/search/sync`.
+
+### 💰 支付 (`/pay`)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/pay/create` 🔐 | 创建支付, 返回支付宝沙箱链接 |
+| POST | `/pay/notify` | 支付宝异步回调 (验签, 支付宝服务器调, 无需 JWT) |
+| GET | `/pay/status/{orderId}` 🔐 | 查询支付状态 |
+
+### 💸 退款 (`/refund`, `/admin/refund`)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/refund/apply` 🔐 | 用户申请退款 (第 1 阶段: 落申请单) |
+| GET | `/admin/refund/list` 🔐👮 | 客服查待审批退款列表 |
+| POST | `/admin/refund/approve/{refundId}` 🔐👮 | 客服批准 (第 2 阶段: 调支付宝原路退款) |
+| POST | `/admin/refund/reject/{refundId}` 🔐👮 | 客服驳回 |
+
+### 🤖 AI 客服 (`/ai`)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/ai/chat` 🔐 | 多轮对话, Agent 可通过 Feign 查订单/退款状态回答 |
+
+> 👮 = 需客服/管理员角色 (网关对 `/admin/**` 强制校验 `role=1`).
 
 ---
 
@@ -299,6 +336,8 @@ mini-mall-cloud/
 ├── mini-mall-order/                 # 9003 - 购物车/订单/秒杀/物流
 ├── mini-mall-review/                # 9004 - 评价
 ├── mini-mall-search/                # 9005 - ES 搜索 (G9 新增)
+├── mini-mall-payment/               # 9008 - 支付/退款/对账 (支付宝沙箱)
+├── mini-mall-ai/                    # 9009 - AI 客服 Agent (LangChain4j)
 ├── mini-mall-common/
 │   ├── mini-mall-common-core/       # Result/Exception/Context
 │   └── mini-mall-common-redis/      # RedisConfig + RedisService (G9 抽取)
@@ -322,12 +361,14 @@ mini-mall-cloud/
 - ✅ F Nacos 配置中心 + Sentinel 限流 (规则推 Nacos)
 - ✅ G1~G9 业务模块 (购物车/订单/秒杀/评价/优惠券/搜索...)
 - ✅ H Feign + Fallback 降级
+- ✅ 支付宝支付 + 定时对账 + 两阶段退款审批 (order 加 Redisson 分布式锁)
+- ✅ AI 客服 Agent (LangChain4j, 可查订单/退款)
+- ✅ SkyWalking 全链路追踪 (UI :18080)
 
 **规划中 (锦上添花)**
 - 🟡 common-security: 抽 JWT 解析/Header 拦截到 common
 - 🟡 common-swagger: Knife4j 统一 API 文档
 - 🟡 G10: 后台管理 (运营端 CRUD)
-- 🟡 链路追踪 (SkyWalking)
 - 🟡 CI/CD (GitHub Actions)
 
 ---
