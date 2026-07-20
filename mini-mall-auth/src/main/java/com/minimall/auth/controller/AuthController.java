@@ -4,9 +4,12 @@ import com.alibaba.csp.sentinel.annotation.SentinelResource;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.minimall.auth.client.UserFeignClient;
 import com.minimall.auth.dto.AuthResponse;
+import com.minimall.auth.dto.LoginRequest;
 import com.minimall.auth.dto.UserLoginDTO;
 import com.minimall.auth.dto.UserRegisterDTO;
+import com.minimall.auth.enums.LoginType;
 import com.minimall.auth.model.User;
+import com.minimall.auth.service.LoginService;
 import com.minimall.common.core.domain.Result;
 import com.minimall.common.core.exception.BusinessException;
 import com.minimall.common.security.util.JwtUtil;
@@ -49,6 +52,10 @@ public class AuthController {
     @Autowired
     private JwtUtil jwtUtil;
 
+    /** 登录统一收口 (策略+工厂) */
+    @Autowired
+    private LoginService loginService;
+
     /** 登出黑名单存这里, key 前缀跟网关校验时一致 */
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
@@ -78,34 +85,13 @@ public class AuthController {
             fallback = "loginFallback"
     )
     public Result<AuthResponse> login(@Valid @RequestBody UserLoginDTO dto) {
-        // ① Feign 查用户
-        Result<User> resp = userFeignClient.getByUsername(dto.getUsername());
-        if (resp.getCode() != 200) {
-            // user 服务挂了 (Fallback 返 503)
-            throw new BusinessException(resp.getMessage());
-        }
-        User user = resp.getData();
-
-        // ② 没查到 / 密码不对 - 防爆破不区分 "用户不存在" vs "密码错"
-        if (user == null || !ENCODER.matches(dto.getPassword(), user.getPassword())) {
-            throw new BusinessException("用户名或密码错误");
-        }
-
-        // ②.5 ⭐ SEC-2 禁用账号拦截: status=0(被管理员禁用)不发 token。
-        //    注意顺序: 放在密码校验【之后】——密码不对的人连"账号被禁用"这个信息都不该知道,
-        //    否则可以用这个提示探测"哪些用户名存在且被禁"。
-        //    ⚠ 已知局限: 已发出的 7 天 JWT 无法即时失效(网关只验签名不查库),
-        //      禁用只能挡"下次登录"; 即时踢人要 token 黑名单/短 token+refresh, 列在后续待办。
-        if (user.getStatus() != null && user.getStatus() == 0) {
-            throw new BusinessException(403, "账号已被禁用, 请联系管理员");
-        }
-
-        // ③ 签 mini-mall 自家 JWT (ADMIN 阶段: role 一起塞)
-        String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getRole());
-
-        // ④ 兜底清掉密文, 防止返前端
-        user.setPassword(null);
-        return Result.success(new AuthResponse(token, user));
+        // 组装 PASSWORD 登录请求, 交 LoginService 统一处理。
+        // 密码校验见 PasswordLoginStrategy; 禁用拦截 + 签 token 见 LoginService。
+        LoginRequest request = new LoginRequest();
+        request.setLoginType(LoginType.PASSWORD);
+        request.setUsername(dto.getUsername());
+        request.setPassword(dto.getPassword());
+        return Result.success(loginService.login(request));
     }
 
     /** Sentinel 限流降级 */
