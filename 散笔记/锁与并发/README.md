@@ -38,6 +38,7 @@
 | ④ | Redis持久化知识点.docx | Redis 重启数据还在：RDB/AOF/混合 + 本机实测 |
 | ⑤ | Redis内存管理与高可用.docx | Redis 一直活着：过期删除/淘汰 LRU-LFU/主从/哨兵/集群 |
 | ⑥ | Seata_AT模式分布式事务深挖.docx | 分布式事务：ACID/本地事务地基 → AT 两阶段/undo_log/全局锁 → createOrder 落地 + 实测抓拍 |
+| ⑦ | 线程池专题_ThreadPoolExecutor深入解析.docx | ①的续篇：从「单线程同步」到「多线程管理复用」。七大参数/任务调度流程/拒绝策略/工作队列/生命周期/线程数估算 |
 
 ---
 
@@ -64,6 +65,13 @@
 | 改了变量别的线程看不见（死循环） | ① 7.2~7.4（Lab5） |
 | DCL 单例为什么要 volatile | ① 7.9 |
 | happens-before / 内存屏障 / MESI | ① 7.6~7.7 |
+| 线程池七大参数分别是什么 | ⑦ 三 |
+| 任务提交后核心/队列/最大线程的调度顺序 | ⑦ 四（先核心→队列→临时→拒绝） |
+| 四种拒绝策略 / CallerRunsPolicy 作用 | ⑦ 五 |
+| 为什么禁用 Executors 工厂方法（阿里规约） | ⑦ 七 |
+| execute 和 submit 区别 / 异常被吞 | ⑦ 九 |
+| CPU 密集 vs IO 密集 线程数怎么设 | ⑦ 十 |
+| 优雅关闭线程池 shutdown vs shutdownNow | ⑦ 八、十一 |
 | String/Hash/List/Set/ZSet 底层结构 | ② Part1（首章） |
 | Redisson 看门狗多久续一次、怎么实现 | ② 源码部分（renewExpiration，每 lease/3=10s） |
 | 加锁/解锁的 Lua 脚本逐行 | ② 源码部分（tryLockInnerAsync / unlockInnerAsync） |
@@ -129,4 +137,4 @@
 
 ---
 
-*最后更新：2026-07-02（⑥新增 0.8~0.11 隔离级别/redo·undo/MVCC + 5.5.1；备份文件确认无误后可删）*
+*最后更新：2026-07-19（新增⑦线程池专题_ThreadPoolExecutor深入解析，作为①的续篇）*
