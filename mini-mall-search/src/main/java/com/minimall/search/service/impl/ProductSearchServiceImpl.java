@@ -25,10 +25,13 @@ import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 /**
  * 商品搜索服务实现 (search 服务核心业务逻辑)
  * <p>
@@ -58,6 +61,9 @@ public class ProductSearchServiceImpl implements IProductSearchService {
     @Resource
     private ElasticsearchOperations elasticsearchOperations; // 复杂搜索 (Repository 不够用时用它)
 
+    @Resource
+    private ThreadPoolTaskExecutor esSyncExecutor;  // 全量灌 ES 的并行线程池 (见 SearchAsyncConfig)
+
     @Override
     public int syncAll() {
         Result<List<ProductSource>>result = productFeignClient.listAllForSync();
@@ -70,17 +76,30 @@ public class ProductSearchServiceImpl implements IProductSearchService {
                 .map(ProductDocument::from)
                 .toList();
 
-        // 4. 分批灌进 ES (saveAll 是 upsert: 有则覆盖, 无则插入)
+        // 4. 分批 + 多线程并行灌进 ES (saveAll 是 upsert: 有则覆盖, 无则插入)
         //    ⚠ 为什么要分批: saveAll 会把整个 List 拼成一个 bulk 请求一次发出。
         //    10 万商品 ≈ 55MB, 超过 ES 的写入压力保护阈值(默认=堆内存 10%, 512M 堆 → 53.6MB),
         //    ES 直接回 429 es_rejected_execution_exception 拒收 —— 这是压测灌数时真实炸出来的坑。
-        //    每批 5000 条 ≈ 3MB, 远低于阈值, 且批次间给 ES 留出消化时间。
+        //    每批 5000 条 ≈ 3MB, 远低于阈值。
+        //    并行灌入: 每批包成一个任务提交到 esSyncExecutor(固定 4 线程), 串行 20 批 → 4 批并发,
+        //    并发写入压力 ≈ 4×3MB=12MB 仍远低于阈值, 既提速又不触发 429。
         final int batchSize = 5000;
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (int from = 0; from < documents.size(); from += batchSize) {
             int to = Math.min(from + batchSize, documents.size());
-            repository.saveAll(documents.subList(from, to));   // subList 是视图不复制数据
-            log.info("[search-sync] 已写入 {}/{} 条", to, documents.size());
+            List<ProductDocument> batch = documents.subList(from, to);  // subList 是视图不复制数据
+            // runAsync: 把这一批的写入丢进线程池异步执行, 立刻拿到一个 future 占位
+            futures.add(CompletableFuture.runAsync(() -> {
+                repository.saveAll(batch);
+                log.info("[search-sync] 已写入一批 {} 条", batch.size());
+            }, esSyncExecutor));
         }
+
+        // allOf(...).join(): 阻塞等所有批次灌完再往下走。
+        //   全量同步必须"确认全部写入完成"才能返回总数, 属于【要结果】的场景 —— 与发邮件的
+        //   fire-and-forget(扔了不管)相反。任一批次抛异常, join() 会抛 CompletionException,
+        //   向上传给全局异常处理返回 500 (全量同步幂等可重跑, 失败大声报出来即可)。
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
         log.info("[search-sync] 全量同步完成, 共 {} 条", documents.size());
         return documents.size();

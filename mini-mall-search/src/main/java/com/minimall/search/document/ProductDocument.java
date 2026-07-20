@@ -19,30 +19,43 @@ public class ProductDocument {
 
     @Field(type = FieldType.Text)              // 字段级别,声明 ES Field 类型
     private String name;
+
     @Field(type = FieldType.Long)
     private Long categoryId;
+
     @Field(type = FieldType.Text)
     private String description ;
+
     @Field(type = FieldType.Text)
     private String detail;
+
     @Field(type = FieldType.Double)
     private BigDecimal price;
+
     @Field(type = FieldType.Integer)
     private Integer stock;
+
     @Field(type = FieldType.Integer)
     private Integer sales;
+
     @Field(type = FieldType.Double)
     private BigDecimal avgRating;
+
     @Field(type = FieldType.Integer)
     private Integer reviewCount;
+
     @Field(type = FieldType.Keyword)
     private String  coverImage;
+
     @Field(type = FieldType.Integer)
     private Byte status;
+
     @Field(type = FieldType.Date, format = DateFormat.date_hour_minute_second)
     private LocalDateTime createTime;
+
     @Field(type = FieldType.Date, format = DateFormat.date_hour_minute_second)
     private LocalDateTime updateTime;
+
     // ProductDocument.java 里加这个静态方法
     public static ProductDocument from(ProductSource src) {
         ProductDocument doc = new ProductDocument();
