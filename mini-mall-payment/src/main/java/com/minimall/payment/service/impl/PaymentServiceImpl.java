@@ -1,10 +1,5 @@
 package com.minimall.payment.service.impl;
 
-import com.alipay.api.AlipayClient;
-import com.alipay.api.internal.util.AlipaySignature;
-import com.alipay.api.request.AlipayTradePagePayRequest;
-import com.alipay.api.request.AlipayTradeQueryRequest;
-import com.alipay.api.response.AlipayTradeQueryResponse;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.minimall.common.core.context.SecurityContextHolder;
@@ -12,13 +7,17 @@ import com.minimall.common.core.domain.Result;
 import com.minimall.common.core.exception.BusinessException;
 import com.minimall.payment.client.OrderFeignClient;
 import com.minimall.payment.client.dto.OrderInfo;
-import com.minimall.payment.config.AlipayProperties;
 import com.minimall.payment.dto.CreatePayDTO;
 import com.minimall.payment.entity.Payment;
 import com.minimall.payment.entity.PaymentNotifyLog;
+import com.minimall.payment.enums.PayChannel;
 import com.minimall.payment.mapper.PaymentMapper;
 import com.minimall.payment.mapper.PaymentNotifyLogMapper;
 import com.minimall.payment.service.IPaymentService;
+import com.minimall.payment.strategy.PayChannelStrategy;
+import com.minimall.payment.strategy.PayChannelStrategyFactory;
+import com.minimall.payment.strategy.dto.PayNotifyResult;
+import com.minimall.payment.strategy.dto.PayQueryResult;
 import com.minimall.payment.vo.PayStatusVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,14 +31,17 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * 支付服务实现 (Phase 2: 创建支付单)。
+ * 支付服务实现 —— 只做【与渠道无关的通用编排】。
  *
- * create 流程 (每一步都有安全意图):
- *   ① 拿当前用户 (SecurityContextHolder, 由网关透传的 X-User-Id 塞进来的)
- *   ② Feign 查订单 —— 金额和归属都以 order 为准, 前端说了不算
- *   ③ 校验: 订单存在 / 是待付款状态
- *   ④ 建支付单 payment (status=0 待支付)
- *   ⑤ 调支付宝生成支付页表单, 返给前端跳转
+ * 所有跟具体支付平台绑死的动作 (生成支付页 / 验签解析回调 / 主动查询) 都委托给
+ * PayChannelStrategy, 本类通过 PayChannelStrategyFactory 按渠道取策略。
+ *
+ * 三条主线各自的通用编排:
+ *   create        查订单 → 校验 → 建单(幂等复用) → 让策略生成支付页
+ *   handleNotify  让策略验签解析 → 幂等落库 → 金额核对 → CAS 改状态 → 通知 order
+ *   queryStatus   归属校验 → (待支付时)让策略主动查 → 金额核对 → CAS 改状态 → 通知 order
+ *
+ * 金额核对原先在"回调"和"主动查询"里各写一遍, 现已统一收进 applyPaidIfAmountMatch 一处。
  */
 @Service
 @Slf4j
@@ -49,9 +51,11 @@ public class PaymentServiceImpl implements IPaymentService {
     private final PaymentMapper paymentMapper;
     private final PaymentNotifyLogMapper notifyLogMapper;
     private final OrderFeignClient orderFeignClient;
-    private final AlipayClient alipayClient;       // Phase 1 配好的"发动机"
-    private final AlipayProperties props;
+    private final PayChannelStrategyFactory strategyFactory;   // 按渠道取策略
 
+    // ════════════════════════════════════════════════════════════
+    // ① 创建支付单
+    // ════════════════════════════════════════════════════════════
     @Override
     public String create(CreatePayDTO dto) {
         // ① 当前登录用户
@@ -62,6 +66,10 @@ public class PaymentServiceImpl implements IPaymentService {
         if (dto == null || dto.getOrderId() == null) {
             throw new BusinessException(400, "缺少订单号");
         }
+
+        // ①.5 解析渠道并取对应策略 (不传默认支付宝; 不认识的渠道名 ofName 会抛)
+        PayChannel channel = PayChannel.ofName(dto.getChannel());
+        PayChannelStrategy strategy = strategyFactory.get(channel);
 
         // ② Feign 查订单 (FeignAuthInterceptor 自动透传 X-User-Id, order 会校验归属)
         Result<OrderInfo> resp = orderFeignClient.getOrder(dto.getOrderId());
@@ -84,12 +92,13 @@ public class PaymentServiceImpl implements IPaymentService {
         }
 
         // ─────────────────────────────────────────────────────────
-        // ④ 建支付单 (幂等复用: 已有待支付单就复用, 不重复建)
-        //    支付宝那边 out_trade_no(=paymentNo) 相同会认成同一笔, 天然不会重复扣钱。
+        // ④ 建支付单 (幂等复用: 同订单+同渠道已有待支付单就复用, 不重复建)
+        //    渠道那边 out_trade_no(=paymentNo) 相同会认成同一笔, 天然不会重复扣钱。
         // ─────────────────────────────────────────────────────────
-        // 查"该订单 + 待支付(status=0)"的那一条; orderByDesc+limit 1 防历史多条报错
+        // 查"该订单 + 该渠道 + 待支付(status=0)"的那一条; orderByDesc+limit 1 防历史多条报错
         QueryWrapper<Payment> qw = new QueryWrapper<>();
         qw.eq("order_id", order.getOrderId())
+          .eq("channel", channel.getCode())
           .eq("status", (byte) 0)
           .orderByDesc("id")
           .last("limit 1");
@@ -99,7 +108,8 @@ public class PaymentServiceImpl implements IPaymentService {
         if (existing != null) {
             // 复用: 直接拿旧单号, 【不再 insert】(它已经在库里了, 再插会主键冲突)
             paymentNo = existing.getPaymentNo();
-            log.info("[pay-create] 复用已有待支付单 paymentNo={} orderNo={}", paymentNo, order.getOrderNo());
+            log.info("[pay-create] 复用已有待支付单 paymentNo={} orderNo={} channel={}",
+                    paymentNo, order.getOrderNo(), channel);
         } else {
             // 新建: new 一个干净对象(id 为空才能走 AUTO 自增), 再 insert
             paymentNo = genPaymentNo(userId);
@@ -109,97 +119,77 @@ public class PaymentServiceImpl implements IPaymentService {
             payment.setOrderNo(order.getOrderNo());
             payment.setUserId(userId);
             payment.setAmount(amount);
-            payment.setChannel((byte) 1);     // 1=支付宝
-            payment.setStatus((byte) 0);      // 0=待支付
+            payment.setChannel(channel.getCode());   // 落库当初选的渠道, queryStatus 时靠它反查策略
+            payment.setStatus((byte) 0);              // 0=待支付
             paymentMapper.insert(payment);
-            log.info("[pay-create] 新建支付单 paymentNo={} orderNo={} amount={}", paymentNo, order.getOrderNo(), amount);
+            log.info("[pay-create] 新建支付单 paymentNo={} orderNo={} amount={} channel={}",
+                    paymentNo, order.getOrderNo(), amount, channel);
         }
 
-        // ⑤ 调支付宝生成"电脑网站支付"页面表单 (新建/复用都走这里, 只有一个出口)
-        return buildAlipayForm(paymentNo, amount, order.getOrderNo());
+        // ⑤ 让渠道策略生成支付页 (新建/复用都走这里, 只有一个出口)
+        return strategy.createPayForm(paymentNo, amount, order.getOrderNo());
     }
 
-
     // ════════════════════════════════════════════════════════════
-    // Phase 3: 支付宝异步回调 (四关: 验签 → 幂等 → CAS 改支付单 → 通知 order)
+    // ② 异步回调 (策略验签解析 → 编排层落库: 幂等 → 金额核对+CAS → 通知 order)
     // ════════════════════════════════════════════════════════════
     @Override
-    public String handleNotify(Map<String, String> params) {
-        String outTradeNo = params.get("out_trade_no");   // 我方支付单号
-        String tradeNo    = params.get("trade_no");       // 支付宝交易号
-        String tradeStatus= params.get("trade_status");
-        String notifyId   = params.get("notify_id");
-        log.info("[pay-notify] 收到回调 outTradeNo={} tradeStatus={} notifyId={}", outTradeNo, tradeStatus, notifyId);
+    public String handleNotify(PayChannel channel, Map<String, String> params) {
+        PayChannelStrategy strategy = strategyFactory.get(channel);
+
+        // ── 第 1 步: 交给策略验签 + 解析, 拿归一化结果 ──────────────
+        PayNotifyResult result = strategy.verifyAndParse(params);
+        switch (result.getStatus()) {
+            case INVALID:
+                // 验签失败/app 不符/异常 → 让渠道稍后重发
+                return "failure";
+            case IGNORED:
+                // 验签过但非成功终态 → 收到了, 别再重发, 但不处理
+                return "success";
+            default:
+                // SUCCESS → 往下走落库
+                break;
+        }
 
         try {
-            // ── 第 1 关: 验签 (RSA2) ──────────────────────────────
-            // 用"支付宝公钥"验这批参数的签名。防的是: 有人伪造一个"支付成功"的 POST 打过来白拿货。
-            // rsaCheckV1 会自动剔除 sign / sign_type 再验, 我们不用手动处理。
-            boolean signOk = AlipaySignature.rsaCheckV1(
-                    params, props.getAlipayPublicKey(), props.getCharset(), props.getSignType());
-            if (!signOk) {
-                log.warn("[pay-notify] 验签失败, 疑似伪造回调 outTradeNo={}", outTradeNo);
-                return "failure";   // 不是支付宝发的, 拒绝
-            }
-
-            // ── 第 2 关: 幂等 (notify_id 唯一索引) ─────────────────
-            // 支付宝为确保送达会重复发同一条通知。先把这条通知落"黑匣子", notify_id 唯一键:
-            //   插入成功 = 第一次见这条通知, 继续处理;
-            //   DuplicateKeyException = 之前处理过 = 直接回 success 让它别再发。
+            // ── 第 2 步: 幂等 (notify_id 唯一索引) ─────────────────
+            // 渠道为确保送达会重复发同一条通知。先把这条落"黑匣子", notify_id 唯一键:
+            //   插入成功 = 第一次见, 继续处理; DuplicateKeyException = 处理过 → 回 success 让它别再发。
             PaymentNotifyLog logRow = new PaymentNotifyLog();
-            logRow.setNotifyId(notifyId);
-            logRow.setNotifyType((byte) 1);       // 1=支付回调
-            logRow.setOutTradeNo(outTradeNo);
-            logRow.setTradeNo(tradeNo);
-            logRow.setTradeStatus(tradeStatus);
+            logRow.setNotifyId(result.getNotifyId());
+            logRow.setNotifyType((byte) 1);              // 1=支付回调
+            logRow.setOutTradeNo(result.getPaymentNo());
+            logRow.setTradeNo(result.getTradeNo());
+            logRow.setTradeStatus(result.getRawStatus());
             logRow.setRawBody(params.toString());
-            logRow.setVerifyResult((byte) 1);     // 验签已通过
+            logRow.setVerifyResult((byte) 1);            // 验签已通过
             try {
                 notifyLogMapper.insert(logRow);
             } catch (DuplicateKeyException dup) {
-                log.info("[pay-notify] 通知已处理过(幂等), 直接返回 success notifyId={}", notifyId);
+                log.info("[pay-notify] 通知已处理过(幂等), 直接返回 success notifyId={}", result.getNotifyId());
                 return "success";
             }
 
-            // ── 第 3 关: 业务校验 (app_id / 交易状态 / 单据 / 金额) ──
-            // app_id 得是我们自己的应用, 防"别的应用的回调"串进来
-            if (!props.getAppId().equals(params.get("app_id"))) {
-                log.warn("[pay-notify] app_id 不匹配 outTradeNo={}", outTradeNo);
-                return "failure";
-            }
-            // 只认"支付成功/交易完成"两个终态, 其余(WAIT_BUYER_PAY 等)不处理但也回 success 免重发
-            if (!"TRADE_SUCCESS".equals(tradeStatus) && !"TRADE_FINISHED".equals(tradeStatus)) {
-                log.info("[pay-notify] 非成功态, 忽略 tradeStatus={}", tradeStatus);
-                return "success";
-            }
-            // 查支付单
-            Payment payment = getByPaymentNo(outTradeNo);
+            // ── 第 3 步: 查支付单 ─────────────────────────────────
+            Payment payment = getByPaymentNo(result.getPaymentNo());
             if (payment == null) {
-                log.warn("[pay-notify] 支付单不存在 outTradeNo={}", outTradeNo);
-                return "failure";
-            }
-            // ⭐ 金额校验: 回调金额必须跟我们建单时的金额一致。防"改小金额"类篡改。
-            BigDecimal notifyAmount = new BigDecimal(params.get("total_amount"));
-            if (notifyAmount.compareTo(payment.getAmount()) != 0) {
-                log.error("[pay-notify] 金额不一致! 回调={} 建单={} outTradeNo={}",
-                        notifyAmount, payment.getAmount(), outTradeNo);
+                log.warn("[pay-notify] 支付单不存在 outTradeNo={}", result.getPaymentNo());
                 return "failure";
             }
 
-            // ── 第 4 关: CAS 改支付单 0→1 + 通知 order (回调 / 主动查询共用一套) ──
-            //    即便前面 notify_id 那层被绕过, applyPaid 里的 WHERE status=0 也保证只生效一次。
-            applyPaid(payment, tradeNo);
-            return "success";
+            // ── 第 4 步: 金额核对 + CAS 改状态 + 通知 order (与主动查询共用) ──
+            //    金额不一致会被 applyPaidIfAmountMatch 挡下并回 false, 这里转成 failure。
+            boolean ok = applyPaidIfAmountMatch(payment, result.getAmount(), result.getTradeNo());
+            return ok ? "success" : "failure";
 
         } catch (Exception e) {
-            // 验签本身也可能抛异常; 兜底回 failure 让支付宝稍后重发
-            log.error("[pay-notify] 处理回调异常 outTradeNo={}", outTradeNo, e);
+            log.error("[pay-notify] 落库处理异常 outTradeNo={}", result.getPaymentNo(), e);
             return "failure";
         }
     }
 
     // ════════════════════════════════════════════════════════════
-    // Phase 4: 支付状态查询 (前端轮询)
+    // ③ 支付状态查询 (前端轮询)
     // ════════════════════════════════════════════════════════════
     @Override
     public PayStatusVO queryStatus(Long orderId) {
@@ -224,9 +214,13 @@ public class PaymentServiceImpl implements IPaymentService {
         }
 
         // ⭐ 主动查询兜底: DB 还是待支付(0)时, 别干等异步回调 —— 沙箱回调经常不发/发慢,
-        //    直接问支付宝这单到底付了没; 若已付就地改 status=1 并通知 order。生产里它也是对账的一部分。
+        //    让对应渠道策略去问"这单到底付了没", 已付就地落库。生产里它也是对账的一部分。
         if (payment.getStatus() != null && payment.getStatus() == 0) {
-            queryAndSyncFromAlipay(payment);
+            PayChannelStrategy strategy = strategyFactory.get(PayChannel.ofCode(payment.getChannel()));
+            PayQueryResult qr = strategy.query(payment.getPaymentNo());
+            if (qr.isPaid()) {
+                applyPaidIfAmountMatch(payment, qr.getAmount(), qr.getTradeNo());
+            }
             payment = getByPaymentNo(payment.getPaymentNo());  // 上一步可能已翻成 1, 重读拿最新态
         }
 
@@ -236,6 +230,10 @@ public class PaymentServiceImpl implements IPaymentService {
         vo.setPaid(payment.getStatus() != null && payment.getStatus() == 1);
         return vo;
     }
+
+    // ════════════════════════════════════════════════════════════
+    // 通用私有方法
+    // ════════════════════════════════════════════════════════════
 
     /** 支付单状态码翻译 */
     private String statusDesc(Byte status) {
@@ -258,14 +256,25 @@ public class PaymentServiceImpl implements IPaymentService {
     }
 
     /**
-     * 把支付单标记为已支付 (CAS 0→1)，若确实是本次翻的状态，再通知 order 标记已付款。
+     * 金额核对 → CAS 改支付单 0→1 → (真翻状态时)通知 order 标记已付款。
      * <p>
-     * 异步回调、主动查询两条路【共用】它，保证落库行为完全一致：
+     * 异步回调、主动查询两条路【共用】它, 保证核对与落库行为完全一致:
+     *   - 金额核对: 渠道返回金额必须与建单金额一致, 不一致直接拒绝 (防"改小金额"类篡改)。
      *   - WHERE status=0 的 CAS 保证并发/重复下只生效一次 (业务幂等最后一道)。
-     *   - rows==0 说明别的线程/别条路已经付过了，直接返回、不重复通知 order。
-     *   - 只有真正翻状态成功 (rows>0) 才通知 order，避免重复 markPaid。
+     *   - rows==0 说明别的线程/别条路已付过了, 直接返回、不重复通知 order。
+     *   - 只有真正翻状态成功 (rows>0) 才通知 order, 避免重复 markPaid。
+     *
+     * @return true=金额一致且已处理妥当(含"已被处理过"); false=金额不一致, 调用方应回 failure
      */
-    private void applyPaid(Payment payment, String tradeNo) {
+    private boolean applyPaidIfAmountMatch(Payment payment, BigDecimal channelAmount, String tradeNo) {
+        // ⭐ 金额核对
+        if (channelAmount == null || channelAmount.compareTo(payment.getAmount()) != 0) {
+            log.error("[pay-paid] 金额不一致! 渠道={} 建单={} paymentNo={}",
+                    channelAmount, payment.getAmount(), payment.getPaymentNo());
+            return false;
+        }
+
+        // ⭐ CAS 0→1
         UpdateWrapper<Payment> uw = new UpdateWrapper<>();
         uw.eq("payment_no", payment.getPaymentNo()).eq("status", 0)
           .set("status", 1)
@@ -274,8 +283,9 @@ public class PaymentServiceImpl implements IPaymentService {
         int rows = paymentMapper.update(null, uw);
         if (rows == 0) {
             log.info("[pay-paid] 支付单已是已支付态(幂等), paymentNo={}", payment.getPaymentNo());
-            return;
+            return true;
         }
+
         // ⚠ 若这步失败(order 挂), 会出现"钱到账、支付单已支付, 但订单还待付款"的不一致。
         //   仍不回滚支付单(钱确实到了), 只 log 标记, 靠定时对账 job 补 markPaid。
         try {
@@ -289,73 +299,7 @@ public class PaymentServiceImpl implements IPaymentService {
         } catch (Exception e) {
             log.error("[pay-paid] 通知 order 异常, 待对账补偿 orderId={}", payment.getOrderId(), e);
         }
-    }
-
-    /**
-     * 主动向支付宝查询这笔单的真实交易状态 (alipay.trade.query)。
-     * <p>
-     * 用途：异步回调靠不住(尤其沙箱)时，前端轮询 queryStatus 会走到这里，主动问支付宝
-     *   "这单到底付了没"，已付就地 applyPaid 落库。任何异常只 log 不抛 —— 这是兜底查询，
-     *   查失败不该影响前端拿当前状态。
-     */
-    private void queryAndSyncFromAlipay(Payment payment) {
-        try {
-            AlipayTradeQueryRequest req = new AlipayTradeQueryRequest();
-            // 用我方支付单号(out_trade_no)问, 支付宝按它定位这笔交易
-            req.setBizContent(String.format("{\"out_trade_no\":\"%s\"}", payment.getPaymentNo()));
-            AlipayTradeQueryResponse resp = alipayClient.execute(req);
-
-            if (!resp.isSuccess()) {
-                // 常见 ACQ.TRADE_NOT_EXIST = 用户还没付/查无此单, 属正常情形, 不当错误
-                log.info("[pay-query] 支付宝查询未成功 paymentNo={} subCode={} subMsg={}",
-                        payment.getPaymentNo(), resp.getSubCode(), resp.getSubMsg());
-                return;
-            }
-            String tradeStatus = resp.getTradeStatus();
-            log.info("[pay-query] 支付宝返回 paymentNo={} tradeStatus={} tradeNo={}",
-                    payment.getPaymentNo(), tradeStatus, resp.getTradeNo());
-
-            // 金额核对(和异步回调一样的防篡改意识): 支付宝返回总额必须与建单金额一致
-            if (resp.getTotalAmount() != null
-                    && new BigDecimal(resp.getTotalAmount()).compareTo(payment.getAmount()) != 0) {
-                log.error("[pay-query] 金额不一致! 支付宝={} 建单={} paymentNo={}",
-                        resp.getTotalAmount(), payment.getAmount(), payment.getPaymentNo());
-                return;
-            }
-
-            if ("TRADE_SUCCESS".equals(tradeStatus) || "TRADE_FINISHED".equals(tradeStatus)) {
-                applyPaid(payment, resp.getTradeNo());   // 复用回调那套 CAS + 通知 order
-            }
-        } catch (Exception e) {
-            log.error("[pay-query] 主动查询支付宝异常 paymentNo={}", payment.getPaymentNo(), e);
-        }
-    }
-
-    /**
-     * 组装并调用支付宝"电脑网站支付"(alipay.trade.page.pay), 返回自动提交表单 HTML。
-     */
-    private String buildAlipayForm(String paymentNo, BigDecimal amount, String orderNo) {
-        AlipayTradePagePayRequest request = new AlipayTradePagePayRequest();
-        // 异步回调(支付宝→我方, 改状态只认它)和同步跳回(给用户看)
-        request.setNotifyUrl(props.getNotifyUrl());
-        request.setReturnUrl(props.getReturnUrl());
-
-        // bizContent = 本次交易的业务参数, 手拼 JSON (字段少, 不引 JSON 库)
-        //   out_trade_no 用我方支付单号; total_amount 金额; subject 标题; product_code 固定值
-        String bizContent = String.format(
-                "{\"out_trade_no\":\"%s\",\"total_amount\":\"%s\",\"subject\":\"订单%s\",\"product_code\":\"FAST_INSTANT_TRADE_PAY\"}",
-                paymentNo, amount.toPlainString(), orderNo);
-        request.setBizContent(bizContent);
-
-        try {
-            // pageExecute: 生成一段带自动提交 <form> 的 HTML, 前端 document.write 即跳到支付宝收银台
-            String form = alipayClient.pageExecute(request).getBody();
-            log.info("[pay-create] 已生成支付宝支付页 paymentNo={}", paymentNo);
-            return form;
-        } catch (Exception e) {
-            log.error("[pay-create] 调支付宝生成支付页失败 paymentNo={}", paymentNo, e);
-            throw new BusinessException(500, "生成支付页失败: " + e.getMessage());
-        }
+        return true;
     }
 
     /** 生成支付单号: PAY + 时间 + userId + 4位随机, 保证唯一 */

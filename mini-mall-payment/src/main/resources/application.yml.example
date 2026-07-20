@@ -42,7 +42,8 @@ alipay:
   gateway-url: ${ALIPAY_GATEWAY_URL:https://openapi-sandbox.dl.alipaydev.com/gateway.do}
 
   # 支付宝异步回调必须是公网可访问地址；本地联调可用内网穿透临时域名。
-  notify-url: ${ALIPAY_NOTIFY_URL:https://your-public-domain.example.com/pay/notify}
+  # 回调按渠道分入口 /pay/notify/{channel}，支付宝对应 /pay/notify/alipay。
+  notify-url: ${ALIPAY_NOTIFY_URL:https://your-public-domain.example.com/pay/notify/alipay}
   refund-notify-url: ${ALIPAY_REFUND_NOTIFY_URL:https://your-public-domain.example.com/refund/notify}
 
   # 同步跳回只用于页面展示，订单最终状态必须以异步回调/主动查询为准。

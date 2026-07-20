@@ -1,6 +1,7 @@
 package com.minimall.payment.service;
 
 import com.minimall.payment.dto.CreatePayDTO;
+import com.minimall.payment.enums.PayChannel;
 import com.minimall.payment.vo.PayStatusVO;
 
 import java.util.Map;
@@ -19,11 +20,12 @@ public interface IPaymentService {
     String create(CreatePayDTO dto);
 
     /**
-     * 处理支付宝【异步】支付回调 (Phase 3 核心)。
-     * @param params 支付宝 POST 过来的全部表单参数
-     * @return 必须返回纯文本 "success"(已收妥, 别再发) 或 "failure"(没处理好, 支付宝会重发)
+     * 处理【异步】支付回调 (Phase 3 核心)。
+     * @param channel 回调来自哪个渠道 (由 /pay/notify/{channel} 路径确定)
+     * @param params  渠道 POST 过来的全部表单参数
+     * @return 必须返回纯文本 "success"(已收妥, 别再发) 或 "failure"(没处理好, 渠道会重发)
      */
-    String handleNotify(Map<String, String> params);
+    String handleNotify(PayChannel channel, Map<String, String> params);
 
     /**
      * 查某订单的支付状态 (Phase 4, 前端轮询用)。只能查自己的单。
