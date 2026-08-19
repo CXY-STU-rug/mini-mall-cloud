@@ -108,6 +108,19 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
         //   tryLock() 无参 = 非阻塞, 抢不到立即失败 (语义跟手写版一致)
         //   不传 leaseTime → 看门狗每 10s 把锁续到 30s, 业务多慢锁都不会中途过期
         //   (手写版硬伤: 10 秒一到锁没了, 慢请求和新请求并发进临界区)
+
+        // 幂等 key 必传（前端进结算页生成的 UUID）
+        if (dto.getRequestId() == null || dto.getRequestId().isEmpty()) {
+            throw new BusinessException(400, "缺少幂等标识");
+        }
+        // 前置查：这个 requestId 已经下过单了 → 直接返回原订单结果，不重复建单（幂等的核心：N 次同请求 == 1 次）
+        Orders exist = ordersMapper.selectOne(new LambdaQueryWrapper<Orders>()
+                .eq(Orders::getRequestId, dto.getRequestId()));
+        if (exist != null) {
+            return buildOrderResult(exist);   // 命中已下过的单，直接返回原结果（幂等快路径）
+        }
+
+
         RLock lock = redissonClient.getLock("lock:order:user:" + userId);
         if (!lock.tryLock()) {
             throw new BusinessException(429, "操作太频繁, 请稍后再试");
@@ -208,7 +221,7 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
                 order.setAddress("" + address.get("province") + address.get("city")
                         + address.get("district") + address.get("detail"));
                 order.setRemark(dto.getRemark());
-
+                order.setRequestId(dto.getRequestId());   // 幂等 key 落库，唯一索引兜底
                 this.save(order);   // ⭐ MP 自动回填 id 到 order.id
 
                 // ─── 第 5.5 步: G8 用券 (可选) ──────────
@@ -290,7 +303,14 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
 
             return orderResult;
 
-        } finally {
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+        // 并发穿透（通常 Redis 锁失效）：唯一索引挡下重复 INSERT
+        // save 在扣库存/用券之前，输家这次没产生任何跨服务副作用，全局事务空提交无害
+        // 查出赢家那单返回，对用户表现为幂等成功（注意：直接 return，跳过上面发 MQ —— MQ 赢家已发过）
+        Orders winner = ordersMapper.selectOne(new LambdaQueryWrapper<Orders>()
+                .eq(Orders::getRequestId, dto.getRequestId()));
+        return buildOrderResult(winner);
+    } finally {
             // isHeldByCurrentThread = 手写版 "UUID owner 校验" 的 Redisson 等价物, 防解到别人的锁
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
@@ -785,5 +805,16 @@ public class OrdersServiceImpl extends ServiceImpl<OrdersMapper, Orders> impleme
         if (rows == 0) {
             throw new BusinessException(400, "订单状态不可签收");
         }
+    }
+    /**
+     * 统一拼装下单返回体。
+     * 抽出来是为了让"正常下单成功""幂等重试命中前置查""并发穿透靠唯一索引兜底"三条路径
+     * 返回完全一致的结构——重试拿到和第一次相同的结果，才叫真幂等。
+     */
+    private Map<String, Object> buildOrderResult(Orders order) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("orderNo", order.getOrderNo());   // 订单号
+        result.put("orderId", order.getId());        // 订单主键
+        return result;
     }
 }

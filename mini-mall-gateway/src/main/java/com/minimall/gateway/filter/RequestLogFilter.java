@@ -5,7 +5,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
@@ -50,10 +52,20 @@ public class RequestLogFilter implements GlobalFilter, Ordered {
         //   为什么 8 位? 全 36 位太长肉眼不友好, 8 位足够本机内区分
         String traceId = UUID.randomUUID().toString().substring(0, 8); // [你来填这一行]
 
-        // ─── ⭐ TODO ②: 用 mutate 加 X-Trace-Id header ────────
-        //   提示: 跟 AuthGlobalFilter 第 ⑤ 步一模一样的套路
-        //   写法: request.mutate().header("X-Trace-Id", traceId).build()
-        ServerHttpRequest mutated = request.mutate().header("X-Trace-Id", traceId).build(); // [你来填这一行]
+        // ─── ⭐ 加 X-Trace-Id header ────────
+        //   坑: 请求穿过 Spring Security 的 WebFilter 链后, header 变成"双层只读"(ReadOnlyHttpHeaders 套 ReadOnlyHttpHeaders),
+        //       而 request.mutate() 内部的 writableHttpHeaders() 只解一层只读 → 里层仍只读, .header() 写时抛 UnsupportedOperationException。
+        //   修法: 不走 mutate 的只读解包, 改用 ServerHttpRequestDecorator 覆写 getHeaders(),
+        //       每次返回一个全新可写的 HttpHeaders 副本(读旧 header 是允许的, 只是不能写它)。
+        ServerHttpRequest mutated = new ServerHttpRequestDecorator(request) {
+            @Override
+            public HttpHeaders getHeaders() {
+                HttpHeaders headers = new HttpHeaders();   // 全新可写 HttpHeaders
+                headers.addAll(super.getHeaders());        // 把原有 header 拷进来(读只读没问题)
+                headers.set("X-Trace-Id", traceId);        // 写到可写副本上, 透传给下游
+                return headers;
+            }
+        };
 
         // ─── ⭐ TODO ③: 打入口日志 ─────────────────────────
         //   提示: log.info("[{}] -> {} {}", traceId, 方法, path);

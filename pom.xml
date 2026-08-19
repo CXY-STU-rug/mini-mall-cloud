@@ -133,6 +133,12 @@
                 <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
                 <version>${knife4j.version}</version>
             </dependency>
+            <!-- ⭐ 网关聚合专用: 让 9080/doc.html 汇总所有微服务的文档 (只有网关引它) -->
+            <dependency>
+                <groupId>com.github.xiaoymin</groupId>
+                <artifactId>knife4j-gateway-spring-boot-starter</artifactId>
+                <version>${knife4j.version}</version>
+            </dependency>
 
             <!-- ⑥ MinIO -->
             <dependency>

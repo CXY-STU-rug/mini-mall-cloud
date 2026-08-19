@@ -93,4 +93,7 @@ public class Orders implements Serializable {
     /** 逻辑删除: 0 未删 1 已删 */
     @TableLogic
     private Byte isDeleted;
+
+    /** 幂等 key（对应 DB request_id，建唯一索引 uk_request_id 兜底防重复下单） */
+    private String requestId;
 }

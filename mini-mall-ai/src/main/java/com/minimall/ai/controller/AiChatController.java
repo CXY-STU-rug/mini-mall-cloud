@@ -1,7 +1,7 @@
 package com.minimall.ai.controller;
 
-import com.minimall.ai.agent.ShoppingAssistant;
 import com.minimall.ai.controller.dto.ChatRequest;
+import com.minimall.ai.service.ChatService;
 import com.minimall.common.core.domain.Result;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -24,8 +24,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AiChatController {
 
-    // 注入 Task4 那个 AiServices 动态生成的购物助手 agent
-    private final ShoppingAssistant shoppingAssistant;
+    // 注入对话编排服务: 内部先回忆长期记忆, 再调 agent (短期记忆+RAG+工具)
+    private final ChatService chatService;
 
     /**
      * 和 AI 客服对话。
@@ -35,8 +35,8 @@ public class AiChatController {
     @PostMapping("/chat")
     public Result<String> chat(@RequestHeader(value = "X-User-Id", defaultValue = "guest") String userId,
                                @RequestBody ChatRequest req) {
-        // 把 userId(记忆隔离) + 用户消息交给 agent, 它内部自动编排 LLM/RAG/工具/记忆
-        String answer = shoppingAssistant.chat(userId, req.getMessage());
+        // 把 userId(记忆隔离) + 用户消息交给编排服务: 回忆长期记忆 → agent 编排 LLM/RAG/工具/短期记忆
+        String answer = chatService.chat(userId, req.getMessage());
         return Result.success(answer);
     }
 }

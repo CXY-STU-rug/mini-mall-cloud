@@ -7,6 +7,8 @@ import com.minimall.common.core.domain.Result;
 import com.minimall.common.core.exception.BusinessException;
 import com.minimall.product.entity.Product;
 import com.minimall.product.service.IProductService;
+import io.swagger.v3.oas.annotations.Operation;   // 描述"单个接口"的用途
+import io.swagger.v3.oas.annotations.tags.Tag;    // 给"一组接口(整个Controller)"起名归类
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,6 +29,7 @@ import java.util.concurrent.ThreadLocalRandom;
  *   GET    /product/hot-search            热搜 Top 10
  *   GET    /product/flaky                 Sentinel 熔断演示(F2 保留)
  */
+@Tag(name = "商品", description = "商品浏览：分页搜索、详情、热搜（C 端公开读；写操作走 /admin/product）")
 @RestController
 @RequestMapping("/product")
 public class ProductController {
@@ -35,6 +38,7 @@ public class ProductController {
     private IProductService productService;
 
     /** ① 分页搜索 + 多条件筛选 */
+    @Operation(summary = "商品分页搜索", description = "按分类/关键词/价格区间分页查询上架商品，公开接口")
     @GetMapping
     public Result<IPage<Product>> list(
             @RequestParam(defaultValue = "1")  Integer page,
@@ -50,6 +54,7 @@ public class ProductController {
     }
 
     /** ② 详情(走 Redis 缓存) */
+    @Operation(summary = "商品详情", description = "按 id 查商品详情（带 Redis 缓存），公开接口")
     @GetMapping("/{id}")
     public Result<Product> detail(@PathVariable("id") Long id) {
         Product product = productService.getProductDetail(id);

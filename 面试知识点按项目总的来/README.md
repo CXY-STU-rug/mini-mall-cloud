@@ -20,6 +20,16 @@
 | [10-AI客服Agent.md](10-AI客服Agent.md) | LangChain4j、RAG、Function Calling、对话记忆隔离 | ★★★☆☆（差异化亮点） |
 | [11-可观测性与调试实战.md](11-可观测性与调试实战.md) | SkyWalking链路追踪、traceId透传、一次真实bug排查 | ★★★☆☆（讲故事神器） |
 
+## 配套教科书 docx（散笔记 → 深挖原理用）
+
+> 速记 md 背面试、落项目代码；docx 从零讲原理、可打印。两者内容互通，速记里也挂了 docx 链接。
+
+| docx | 对应速记 | 内容 |
+|------|---------|------|
+| [RabbitMQ基础与实战.docx](../散笔记/rabbitMq和kafka/RabbitMQ基础与实战.docx) | 05 | AMQP模型 / 4种交换机 / 可靠性三环 / 死信延迟 / Spring整合 **+ 项目面试速记(8考点)** |
+| [Kafka基础与实战.docx](../散笔记/rabbitMq和kafka/Kafka基础与实战.docx) | 05 | 分区副本 / ISR / acks机制 / 高性能原理 / **换Kafka怎么改**思考题 |
+| [SpringGateway与Sentinel限流全解.docx](../散笔记/限流/SpringGateway与Sentinel限流全解.docx) | 07 | 限流四算法(手写Java) / Gateway原生 / Sentinel架构(Slot链) / 七大规则 / 网关三踩坑 |
+
 ## 项目架构总图（面试开场 30 秒画出来）
 
 ```

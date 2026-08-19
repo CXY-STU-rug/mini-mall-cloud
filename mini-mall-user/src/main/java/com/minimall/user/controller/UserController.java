@@ -4,6 +4,7 @@ import com.minimall.common.core.context.SecurityContextHolder;
 import com.minimall.common.core.domain.Result;
 import com.minimall.common.core.exception.BusinessException;
 import com.minimall.user.client.ProductFeignClient;
+import com.minimall.user.dto.ChangePasswordDTO;
 import com.minimall.user.dto.UserProfileUpdateDTO;
 import com.minimall.user.entity.User;
 import com.minimall.user.mapper.UserMapper;
@@ -12,6 +13,7 @@ import com.minimall.user.vo.UserProfileVO;
 import jakarta.validation.Valid;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
@@ -32,6 +34,9 @@ import java.util.Map;
 @RestController
 @RequestMapping("/user")
 public class UserController {
+
+    /** BCrypt 加密器 —— 无状态线程安全, 全类共享 */
+    private static final BCryptPasswordEncoder ENCODER = new BCryptPasswordEncoder();
 
     @Autowired
     private UserMapper userMapper;
@@ -76,6 +81,32 @@ public class UserController {
 
         return Result.success();
     }
+    /**
+     * 修改密码 (已登录用户, 需要提供原密码)
+     *
+     * 流程:
+     *   ① 从 X-User-Id 取当前用户 id
+     *   ② 查库拿 BCrypt 密文
+     *   ③ matches(oldPassword, 密文) — 不对就 400
+     *   ④ 加密新密码 → updateById (只改 password 字段)
+     */
+    @PutMapping("/me/password")
+    public Result<Void> changePassword(@Valid @RequestBody ChangePasswordDTO dto) {
+        Long userId = SecurityContextHolder.getUserId();
+        User user = userMapper.selectById(userId);
+        if (user == null) throw new BusinessException("用户不存在");
+
+        if (!ENCODER.matches(dto.getOldPassword(), user.getPassword())) {
+            throw new BusinessException("原密码不正确");
+        }
+
+        User update = new User();
+        update.setId(userId);
+        update.setPassword(ENCODER.encode(dto.getNewPassword()));
+        userService.updateById(update);
+        return Result.success();
+    }
+
     /** 按 id 查 */
     @GetMapping("/{id}")
     public Result<User> getById(@PathVariable("id") Long id) {
@@ -109,4 +140,5 @@ public class UserController {
         data.put("product", productResp.getData());
         return Result.success(data);
     }
+
 }

@@ -7,7 +7,10 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+
+import java.util.Map;
 
 /**
  * User 服务的 Feign 客户端 (auth → user 跨服务调用)
@@ -58,4 +61,14 @@ public interface UserFeignClient {
      */
     @PostMapping("/user/internal")
     Result<User> createUser(@RequestBody User user);
+
+    /**
+     * 按 id 更新密码 (找回密码流程: auth 加密后调此接口写库)
+     *
+     * @param id   用户 id
+     * @param body { "password": "BCrypt密文" }
+     */
+    @PutMapping("/user/internal/{id}/password")
+    Result<Void> updatePassword(@PathVariable("id") Long id,
+                                @RequestBody Map<String, String> body);
 }

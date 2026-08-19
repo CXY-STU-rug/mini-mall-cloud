@@ -1,7 +1,7 @@
 package com.minimall.auth.controller;
 
 import com.minimall.auth.constant.EmailAuthConstants;
-import com.minimall.auth.dto.AuthResponse;
+import com.minimall.auth.vo.AuthResponse;
 import com.minimall.auth.dto.EmailLoginDTO;
 import com.minimall.auth.dto.LoginRequest;
 import com.minimall.auth.dto.SendEmailCodeDTO;

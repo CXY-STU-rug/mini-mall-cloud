@@ -1,6 +1,7 @@
 package com.minimall.ai.config;
 
 import com.minimall.ai.agent.ShoppingAssistant;
+import com.minimall.ai.memory.MemoryTool;
 import com.minimall.ai.tool.ProductQueryTool;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
@@ -15,6 +16,9 @@ import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.redis.RedisEmbeddingStore;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+
+import java.util.List;
 
 /**
  * 把 AI 能力装配成 Spring Bean。
@@ -44,13 +48,35 @@ public class LangChainConfig {
                 .build();
     }
 
-    /** ③ 向量库 = Redis Stack */
+    /**
+     * ③ 政策知识向量库 = Redis Stack (RAG 用)。
+     *    @Primary: 本模块现在有两个 EmbeddingStore(政策库 + 长期记忆库), 按类型注入时默认用这个,
+     *    只有长期记忆服务显式 @Qualifier 点名记忆库。
+     */
     @Bean
+    @Primary
     public EmbeddingStore<TextSegment> embeddingStore(AiProperties p) {
         return RedisEmbeddingStore.builder()
                 .host(p.getRedis().getHost())
                 .port(p.getRedis().getPort())
                 .dimension(p.getRedis().getDimension())
+                .build();
+    }
+
+    /**
+     * ③b 长期记忆专用向量库 = Redis Stack。
+     *    与政策库【物理隔离】: 不同 indexName + 不同 prefix, 检索时不会互相串。
+     *    metadataKeys(userId): 让 Redis 为 userId 建元数据索引, 从而支持按 userId 过滤(用户间隔离)。
+     */
+    @Bean("longTermMemoryStore")
+    public EmbeddingStore<TextSegment> longTermMemoryStore(AiProperties p) {
+        return RedisEmbeddingStore.builder()
+                .host(p.getRedis().getHost())
+                .port(p.getRedis().getPort())
+                .dimension(p.getRedis().getDimension())
+                .indexName("ltm-user-memory")
+                .prefix("ltm:")
+                .metadataKeys(List.of("userId"))
                 .build();
     }
 
@@ -82,12 +108,14 @@ public class LangChainConfig {
     @Bean
     public ShoppingAssistant shoppingAssistant(ChatLanguageModel chatModel,
                                                ContentRetriever contentRetriever,
-                                               ProductQueryTool productQueryTool) {
+                                               ProductQueryTool productQueryTool,
+                                               MemoryTool memoryTool) {
         return AiServices.builder(ShoppingAssistant.class)
                 .chatLanguageModel(chatModel)
                 .contentRetriever(contentRetriever)
                 .chatMemoryProvider(memoryId -> MessageWindowChatMemory.withMaxMessages(10))
-                .tools(productQueryTool)
+                // 两个工具: 查商品 + 写长期记忆; 模型按需自行决定调哪个
+                .tools(productQueryTool, memoryTool)
                 .build();
     }
 }

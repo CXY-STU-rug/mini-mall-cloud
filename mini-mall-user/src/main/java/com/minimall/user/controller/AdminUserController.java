@@ -8,12 +8,14 @@ import com.minimall.common.core.exception.BusinessException;
 import com.minimall.user.dto.AdminUserPageDTO;
 import com.minimall.user.entity.User;
 import com.minimall.user.mapper.UserMapper;
+import com.minimall.user.service.IRoleService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,6 +42,9 @@ public class AdminUserController {
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
+
+    @Autowired
+    private IRoleService roleService;
 
     /** 禁用用户标记前缀 (user 写 / gateway 读, 必须一致) */
     public static final String USER_DISABLED_PREFIX = "user:disabled:";

@@ -1,6 +1,5 @@
 package com.minimall.product.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -56,6 +55,10 @@ public class ProductServiceImpl
     //        不用新加依赖/配置 (order 模块同款升级, 全项目锁方案统一成 Redisson)
     @Autowired
     private RedissonClient redissonClient;
+
+    @Autowired
+    private  RabbitTemplate rabbitTemplate;
+
 
     /** 详情: 布隆前置拦截 → Redis 缓存 → 没中查 MySQL → 回写缓存
      *  防护: ⓪ 穿透第一层(布隆挡随机不存在 id)  ① 穿透第二层(缓存空值兜假阳性/已删商品)
@@ -147,8 +150,7 @@ public class ProductServiceImpl
     }
 
     // SEC-2: 商品变更后发 MQ，让 search 服务异步对齐 ES 索引 (上下架/库存联动)
-    @Autowired
-    private RabbitTemplate rabbitTemplate;
+
 
     private void publishSearchSyncEvent(Long productId, String routingKey) {
         if (productId == null) {
@@ -197,13 +199,20 @@ public class ProductServiceImpl
     @Override
     public boolean updateProduct(Product product) {
         boolean ok = updateById(product);
+
         if (ok) {
-            redisTemplate.delete("product:detail:" + product.getId());
-            log.info("缓存已删除 key=product:detail:{}", product.getId());
-            // ⭐ SEC-2: 编辑/上架/下架 共用本方法 → 通知 search 回查最新状态,
-            //    上架→upsert 进索引, 下架→从索引删, 让"搜索结果"跟"数据库"对齐。
-            //    顺序注意: 必须放在删缓存【之后】, search 回查 /product/{id} 才拿得到新数据。
-            publishSearchSyncEvent(product.getId(), ProductSearchMQConfig.ROUTING_KEY_UPDATED);
+            redisTemplate.delete(
+                    "product:detail:" + product.getId()
+            );
+
+            log.info("缓存已删除");
+
+            publishSearchSyncEvent(
+                    product.getId(),
+                    ProductSearchMQConfig.ROUTING_KEY_UPDATED);
+
+
+
         }
         return ok;
     }

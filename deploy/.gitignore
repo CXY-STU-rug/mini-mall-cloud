@@ -1,0 +1,5 @@
+# 真实密钥文件绝不进 git
+.env
+# 前端产物和证书不进 git
+nginx/html/
+nginx/cert/

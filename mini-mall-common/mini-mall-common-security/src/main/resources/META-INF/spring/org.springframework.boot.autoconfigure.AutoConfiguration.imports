@@ -1,2 +1,3 @@
 com.minimall.common.security.config.SecurityAutoConfiguration
 com.minimall.common.security.config.WebMvcConfig
+com.minimall.common.security.config.ServletSecurityConfig

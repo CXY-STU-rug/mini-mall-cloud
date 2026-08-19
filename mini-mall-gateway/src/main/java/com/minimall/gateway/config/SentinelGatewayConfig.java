@@ -6,6 +6,7 @@ import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.minimall.common.core.domain.Result;
+import com.minimall.gateway.util.GatewayResponseWriter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
@@ -41,17 +42,6 @@ public class SentinelGatewayConfig {
     /** 序列化限流 JSON 用; ObjectMapper 线程安全, 全类共享一个 */
     private final ObjectMapper mapper = new ObjectMapper();
 
-    /** 拼 429 响应体: {"code":429,"message":"网关限流..."} */
-    private byte[] blockBody(Throwable ex) {
-        Result<Void> result = Result.error(429,
-                "网关限流: 请求太频繁, 请稍后再试 (" + ex.getClass().getSimpleName() + ")");
-        try {
-            return mapper.writeValueAsBytes(result);
-        } catch (JsonProcessingException e) {
-            return "{\"code\":429,\"message\":\"too many requests\"}".getBytes(StandardCharsets.UTF_8);
-        }
-    }
-
     /**
      * G4: 兜住限流异常的真正防线。
      * <p>
@@ -81,13 +71,12 @@ public class SentinelGatewayConfig {
             if (!BlockException.isBlockException(ex)) {
                 return Mono.error(ex);
             }
-            ServerHttpResponse response = exchange.getResponse();
+            // 复用网关统一响应工具: 限流 429 与 Security 的 401/403、路由失败 503 走同一处, 结构完全一致
+            Result<Void> body = Result.error(429,
+                    "网关限流: 请求太频繁, 请稍后再试 (" + ex.getClass().getSimpleName() + ")");
             // 注意不做 isCommitted 防御 —— G4 实测限流 cancel 会留下"假已提交"状态,
             // 检查它反而放弃了本可成功的写出; 真写失败时 onErrorResume 把原异常还给默认处理器
-            response.setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
-            response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-            // bufferFactory().wrap: 把字节数组包成 WebFlux 的 DataBuffer 直接写出, 不经过 ServerResponse 那套(它在这条链上有坑)
-            return response.writeWith(Mono.just(response.bufferFactory().wrap(blockBody(ex))))
+            return GatewayResponseWriter.writeJson(exchange.getResponse(), HttpStatus.TOO_MANY_REQUESTS, body, mapper)
                     .onErrorResume(writeEx -> Mono.error(ex));
         };
     }

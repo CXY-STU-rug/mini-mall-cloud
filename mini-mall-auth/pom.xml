@@ -75,10 +75,20 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- ⑧ BCrypt 密码加密 (本地登录验证密码 / 注册时加密) -->
+        <!-- ⑧ ⭐ Spring Security 全家桶 (重写登录/鉴权层的核心)
+             - starter-security   : 认证/授权框架本体 (SecurityFilterChain / AuthenticationManager /
+                                     UserDetailsService / PasswordEncoder / @PreAuthorize)。
+                                     它已内含 BCrypt, 所以删掉了原来单独引的 spring-security-crypto。
+             - starter-oauth2-client: 用【标准 OAuth2 授权码流程】做 GitHub 第三方登录,
+                                     替代原来 OAuthController 手写 RestTemplate 拼 URL / 换 token 那一套。
+             版本都由 Spring Boot 父 pom 管理, 不用写 <version>。 -->
         <dependency>
-            <groupId>org.springframework.security</groupId>
-            <artifactId>spring-security-crypto</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-client</artifactId>
         </dependency>
 
         <!-- ⑨ 参数校验 @NotBlank @Size -->

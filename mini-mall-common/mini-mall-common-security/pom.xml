@@ -78,6 +78,19 @@
             <artifactId>spring-boot-autoconfigure</artifactId>
         </dependency>
 
+        <!-- ⑤b ⭐ 阶段三: Spring Security(Servlet 版)
+             - compile 作用域(默认): 让所有依赖 common-security 的【业务服务】都【传递拿到】Spring Security,
+               从而 ServletSecurityConfig 自动生效 → 业务服务获得 /admin/** 二次校验 + @PreAuthorize 能力。
+             - 对 gateway(WebFlux): 虽也传递到, 但 ServletSecurityConfig 被 @ConditionalOnWebApplication(SERVLET)
+               挡住不加载, 网关仍走它自己的响应式安全, 不冲突。
+             - 对 auth: 它已显式引过同一个 starter, Maven 去重, 且 ServletSecurityConfig 因 auth 有自己的
+               SecurityFilterChain 而自动退让。
+             版本由 Spring Boot 父 pom 管理, 不写 <version>。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
         <!-- ⑥ Lombok: @Data / @Slf4j -->
         <dependency>
             <groupId>org.projectlombok</groupId>

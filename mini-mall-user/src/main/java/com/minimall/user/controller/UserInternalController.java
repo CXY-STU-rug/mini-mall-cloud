@@ -8,9 +8,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
 
 import java.time.LocalDateTime;
 
@@ -61,6 +64,22 @@ public class UserInternalController {
         QueryWrapper<User> wrapper = new QueryWrapper<>();
         wrapper.eq("oauth_provider", provider).eq("oauth_id", oauthId);
         return Result.success(userMapper.selectOne(wrapper));
+    }
+
+    // ─── ③.5 按 id 更新密码 (auth 找回密码时 Feign 调) ───────────
+    /**
+     * 更新指定用户的密码。
+     * body: { "password": "BCrypt密文" } — 加密由 auth 服务完成, 这里只做写库
+     * ⚠️ 仅内部接口, 网关禁止外部访问 /user/internal/**
+     */
+    @PutMapping("/{id}/password")
+    public Result<Void> updatePassword(@PathVariable Long id,
+                                       @RequestBody Map<String, String> body) {
+        User update = new User();
+        update.setId(id);
+        update.setPassword(body.get("password"));
+        userMapper.updateById(update);
+        return Result.success();
     }
 
     // ─── ③ 创建用户 (本地注册 / OAuth 首次) ─────────────────────

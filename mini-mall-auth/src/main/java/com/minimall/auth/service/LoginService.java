@@ -1,6 +1,6 @@
 package com.minimall.auth.service;
 
-import com.minimall.auth.dto.AuthResponse;
+import com.minimall.auth.vo.AuthResponse;
 import com.minimall.auth.dto.LoginRequest;
 import com.minimall.auth.model.User;
 import com.minimall.auth.strategy.LoginStrategy;

@@ -53,6 +53,10 @@ public class RabbitMQConfig {
     public static final String SECKILL_QUEUE       = "seckill.queue";
     public static final String SECKILL_ROUTING_KEY = "seckill";
 
+    public  static  final  String UPADTEPRODUCT_EXCHANGE = "update.product.exchange";
+    public  static  final  String UPADTEPRODUCT_QUEUE = "update.product.queue";
+    public  static  final  String UPADTEPRODUCT_ROUTING_KEY = "update.product.routing.key";
+
     // ━━━━━━━━━━━━━━━ 组 1: 延迟队列 (TTL + DLX) ━━━━━━━━━━━━━━━
 
     /**
@@ -150,4 +154,7 @@ public class RabbitMQConfig {
                 .to(seckillExchange())
                 .with(SECKILL_ROUTING_KEY);
     }
+
+
 }
+

@@ -27,6 +27,15 @@
             <artifactId>spring-cloud-starter-gateway</artifactId>
         </dependency>
 
+        <!-- ⭐ 阶段二: 响应式 Spring Security
+             gateway 是 WebFlux, 引这个 starter 后 Spring Boot 自动装配【响应式】安全
+             (ServerHttpSecurity / SecurityWebFilterChain), 由它接管 JWT 认证 + 授权,
+             替代原来手写的 AuthGlobalFilter。版本由父 pom 管理, 不写 <version>。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
         <!-- ② 复用公共模块：Result / BusinessException 等 -->
         <dependency>
             <groupId>com.minimall</groupId>
@@ -62,6 +71,15 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+
+        <!-- ⭐ Knife4j 网关聚合 (WebFlux 版):
+             - 业务服务引的是 mini-mall-common-swagger (各自生成 /v3/api-docs)
+             - 网关只引这个聚合 starter: 从 Nacos 发现各服务, 汇总到 9080/doc.html 一个入口
+             - 版本由父 pom dependencyManagement 锁的 knife4j.version(4.5.0) 决定 -->
+        <dependency>
+            <groupId>com.github.xiaoymin</groupId>
+            <artifactId>knife4j-gateway-spring-boot-starter</artifactId>
         </dependency>
 
     </dependencies>

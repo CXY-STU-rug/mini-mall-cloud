@@ -3,8 +3,10 @@ package com.minimall.auth.controller;
 import com.alibaba.csp.sentinel.annotation.SentinelResource;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.minimall.auth.client.UserFeignClient;
-import com.minimall.auth.dto.AuthResponse;
+import com.minimall.auth.constant.EmailAuthConstants;
+import com.minimall.auth.vo.AuthResponse;
 import com.minimall.auth.dto.LoginRequest;
+import com.minimall.auth.dto.ResetPasswordDTO;
 import com.minimall.auth.dto.UserLoginDTO;
 import com.minimall.auth.dto.UserRegisterDTO;
 import com.minimall.auth.enums.LoginType;
@@ -12,11 +14,17 @@ import com.minimall.auth.model.User;
 import com.minimall.auth.service.LoginService;
 import com.minimall.common.core.domain.Result;
 import com.minimall.common.core.exception.BusinessException;
+import com.minimall.auth.security.LoginUser;
 import com.minimall.common.security.util.JwtUtil;
 import io.jsonwebtoken.Claims;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.DisabledException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -25,6 +33,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -52,9 +62,12 @@ public class AuthController {
     @Autowired
     private JwtUtil jwtUtil;
 
-    /** 登录统一收口 (策略+工厂) */
+    /**
+     * Spring Security 认证入口。
+     * 调它的 authenticate() 会自动走：FeignUserDetailsService 查用户 → PasswordEncoder 比对密码 → 禁用检查。
+     */
     @Autowired
-    private LoginService loginService;
+    private AuthenticationManager authenticationManager;
 
     /** 登出黑名单存这里, key 前缀跟网关校验时一致 */
     @Autowired
@@ -85,13 +98,27 @@ public class AuthController {
             fallback = "loginFallback"
     )
     public Result<AuthResponse> login(@Valid @RequestBody UserLoginDTO dto) {
-        // 组装 PASSWORD 登录请求, 交 LoginService 统一处理。
-        // 密码校验见 PasswordLoginStrategy; 禁用拦截 + 签 token 见 LoginService。
-        LoginRequest request = new LoginRequest();
-        request.setLoginType(LoginType.PASSWORD);
-        request.setUsername(dto.getUsername());
-        request.setPassword(dto.getPassword());
-        return Result.success(loginService.login(request));
+        // ① 交给 Spring Security 认证。authenticate() 内部依次做：
+        //    FeignUserDetailsService 按用户名查用户 → PasswordEncoder(BCrypt) 比对密码 →
+        //    LoginUser.isEnabled() 检查是否被禁用。任一步失败都会抛异常。
+        Authentication authentication;
+        try {
+            authentication = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(dto.getUsername(), dto.getPassword()));
+        } catch (DisabledException e) {
+            // status==0 被禁用：保留原来的 403 语义
+            throw new BusinessException(403, "账号已被禁用, 请联系管理员");
+        } catch (AuthenticationException e) {
+            // 用户不存在 / 密码错：统一提示、不区分，防用户名枚举
+            throw new BusinessException("用户名或密码错误");
+        }
+
+        // ② 认证通过：principal 就是我们的 LoginUser，取出业务 User 去签自家 JWT
+        LoginUser loginUser = (LoginUser) authentication.getPrincipal();
+        User user = loginUser.getUser();
+        String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getRole());
+        user.setPassword(null);   // 兜底：密文绝不出网关
+        return Result.success(new AuthResponse(token, user));
     }
 
     /** Sentinel 限流降级 */
@@ -137,6 +164,54 @@ public class AuthController {
         } catch (Exception e) {
             // token 已过期/本就无效 → 无需拉黑, 直接当登出成功
         }
+        return Result.success();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ①.8 找回密码 (邮箱验证码重置)
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 找回密码
+     *
+     * 流程:
+     *   ① 从 Redis 取该邮箱的验证码, 比对 dto.code
+     *   ② Feign 按邮箱查用户 (不存在 → 400)
+     *   ③ BCrypt 加密新密码, Feign 调 internal 接口写库
+     *   ④ 删除 Redis 验证码 (防重放)
+     *
+     * 注: 发验证码仍用现有 POST /auth/email/code (不新增接口, 复用逻辑)
+     */
+    @PostMapping("/reset-password")
+    public Result<Void> resetPassword(@Valid @RequestBody ResetPasswordDTO dto) {
+        // ① 验证码校验
+        String storedCode = stringRedisTemplate.opsForValue()
+                .get(EmailAuthConstants.CODE_PREFIX + dto.getEmail());
+        if (storedCode == null || !storedCode.equals(dto.getCode())) {
+            throw new BusinessException("验证码无效或已过期");
+        }
+
+        // ② 查用户 (不存在说明该邮箱没有绑定账号)
+        Result<User> userResult = userFeignClient.getByEmail(dto.getEmail());
+        if (userResult.getCode() != 200) {
+            throw new BusinessException("用户服务暂不可用，请稍后再试");
+        }
+        User user = userResult.getData();
+        if (user == null) {
+            throw new BusinessException("该邮箱未绑定任何账号，请先注册或绑定邮箱");
+        }
+
+        // ③ 加密新密码, 通过 internal 接口写库
+        String encodedPwd = ENCODER.encode(dto.getNewPassword());
+        Map<String, String> body = new HashMap<>();
+        body.put("password", encodedPwd);
+        Result<Void> updateResult = userFeignClient.updatePassword(user.getId(), body);
+        if (updateResult.getCode() != 200) {
+            throw new BusinessException("密码重置失败，请重试");
+        }
+
+        // ④ 删除验证码 (一次性, 防重放攻击)
+        stringRedisTemplate.delete(EmailAuthConstants.CODE_PREFIX + dto.getEmail());
         return Result.success();
     }
 

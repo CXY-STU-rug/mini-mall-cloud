@@ -26,6 +26,11 @@ public class ProductSearchMQConfig {
     public static final String DLQ = "product.search.dlq";
     public static final String DLQ_ROUTING_KEY = "product.search.dead";
 
+
+    public  static  final  String UPADTEPRODUCT_EXCHANGE = "update.product.exchange";
+    public  static  final  String UPADTEPRODUCT_QUEUE = "update.product.queue";
+    public  static  final  String UPADTEPRODUCT_ROUTING_KEY = "update.product.routing.key";
+
     @Bean
     public DirectExchange productSearchExchange() {
         return new DirectExchange(EXCHANGE, true, false);
@@ -69,4 +74,27 @@ public class ProductSearchMQConfig {
                 .to(productSearchDeadLetterExchange())
                 .with(DLQ_ROUTING_KEY);
     }
+
+
+    @Bean
+    public DirectExchange ProductExchange() {
+        return new DirectExchange(UPADTEPRODUCT_EXCHANGE, true, false);
+
+    }
+    @Bean
+    public Queue ProductQueue()
+    {
+        return new Queue(UPADTEPRODUCT_QUEUE, true);
+
+    }
+    @Bean
+    public Binding ProductBinding() {
+
+        return BindingBuilder.bind(ProductQueue()).to(ProductExchange()).with(UPADTEPRODUCT_ROUTING_KEY);
+    }
+
+
+
+
+
 }

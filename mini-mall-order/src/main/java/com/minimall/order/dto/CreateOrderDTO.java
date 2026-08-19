@@ -27,4 +27,7 @@ public class CreateOrderDTO {
 
     /** G8: 用哪张券 (user_coupon.id, 可空 - 不用券就 null) */
     private Long userCouponId;
+
+    /** 幂等 key：前端进结算页时生成的 UUID，重试同一单必须用同一个（防重复下单的唯一凭证） */
+    private String requestId;
 }

@@ -3,7 +3,7 @@ package com.minimall.auth.controller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.minimall.auth.client.UserFeignClient;
-import com.minimall.auth.dto.AuthResponse;
+import com.minimall.auth.vo.AuthResponse;
 import com.minimall.auth.model.User;
 import com.minimall.auth.properties.GithubOAuthProperties;
 import com.minimall.common.core.domain.Result;

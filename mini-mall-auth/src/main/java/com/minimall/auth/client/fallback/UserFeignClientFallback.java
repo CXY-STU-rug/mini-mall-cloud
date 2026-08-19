@@ -7,6 +7,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
+
 /**
  * UserFeignClient 降级
  *
@@ -39,6 +41,12 @@ public class UserFeignClientFallback implements UserFeignClient {
     @Override
     public Result<User> createUser(User user) {
         log.warn("[Feign-Fallback] (auth→user).createUser 降级 username={}", user.getUsername());
+        return Result.error(503, "用户服务暂不可用");
+    }
+
+    @Override
+    public Result<Void> updatePassword(Long id, Map<String, String> body) {
+        log.warn("[Feign-Fallback] (auth→user).updatePassword 降级 userId={}", id);
         return Result.error(503, "用户服务暂不可用");
     }
 }

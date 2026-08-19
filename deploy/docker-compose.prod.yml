@@ -1,0 +1,303 @@
+# ================================================================
+# mini-mall-cloud 上线编排(单机 Docker Compose 全容器化)
+# 用法见同目录 README.md。启动: docker compose -f docker-compose.prod.yml --env-file .env up -d
+#
+# 关键设计:
+#   ① 所有容器同一个网络 mmnet，用『容器名』互访(nacos/mysql/redis...)
+#   ② Java 服务连中间件的地址全走环境变量注入，靠 Spring 松绑定覆盖 yml 里的 localhost
+#      —— 这样不用改每个模块的 application.yml，env 优先级高于 yml
+#   ③ 敏感值(密码/密钥)全在 .env，绝不写死在这个文件里(此文件会进 git)
+#   ④ 业务服务 depends_on 中间件 healthy 才启动，避开『Nacos 没起服务自杀』的坑
+# ================================================================
+
+# 抽出一段 Java 服务公共环境，YAML 锚点(&java-env)复用，避免每个服务重复写一大坨
+x-java-env: &java-env
+  TZ: Asia/Shanghai
+  # ↓ Spring 松绑定：环境变量优先级高于 application.yml，用容器名覆盖掉本机的 localhost
+  SPRING_CLOUD_NACOS_DISCOVERY_SERVER_ADDR: nacos:8848      # 注册中心
+  SPRING_CLOUD_NACOS_CONFIG_SERVER_ADDR: nacos:8848         # 配置中心
+  SPRING_DATA_REDIS_HOST: redis                             # 业务 Redis(锁/缓存/布隆)
+  SPRING_DATA_REDIS_PORT: "6379"
+  SPRING_RABBITMQ_HOST: rabbitmq                            # 消息队列
+  SPRING_RABBITMQ_PORT: "5672"
+  SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER}                # 账号密码来自 .env
+  SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASS}
+
+services:
+
+  # ─────────────────────── 中间件层 ───────────────────────
+
+  mysql:
+    image: mysql:8.0                          # 你本机是原生 MySQL，上线补成容器
+    container_name: mmc-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASS} # root 密码从 .env 注入
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql             # 数据挂命名卷，容器删了库不丢
+      - ./sql:/docker-entrypoint-initdb.d     # 首次启动自动执行 sql/ 里的建表脚本
+    healthcheck:                              # 健康检查：业务服务靠它判断 MySQL 真能连了
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASS}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [mmnet]
+    restart: always
+
+  redis:
+    image: redis:7                            # 业务 Redis(6379)，你本机也是原生，补容器
+    container_name: mmc-redis
+    command: ["redis-server", "--appendonly", "yes"]  # 开 AOF 持久化，重启不丢锁/缓存
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [mmnet]
+    restart: always
+
+  nacos:
+    image: nacos/nacos-server:v2.3.2          # 与你现有环境同版本
+    container_name: mmc-nacos
+    environment:
+      MODE: standalone                        # 单机模式(学习项目够用；生产应集群+MySQL存储)
+      TZ: Asia/Shanghai
+    volumes:
+      - nacos-data:/home/nacos/data           # 配置/限流规则持久化
+    healthcheck:                              # ★关键：业务服务等它 healthy 再启，避免连不上自杀
+      test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [mmnet]
+    restart: always
+
+  rabbitmq:
+    image: rabbitmq:3-management              # 带管理台(15672)
+    container_name: mmc-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks: [mmnet]
+    restart: always
+
+  seata:
+    image: seataio/seata-server:1.8.0         # 分布式事务 TC，与现有同版本
+    container_name: mmc-seata
+    environment:
+      TZ: Asia/Shanghai
+    networks: [mmnet]
+    restart: always
+
+  elasticsearch:
+    image: elasticsearch:8.13.4               # 商品搜索 + SkyWalking 存储
+    container_name: mmc-es
+    environment:
+      - discovery.type=single-node            # 单节点
+      - xpack.security.enabled=false          # 学习环境关鉴权(生产要开)
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m        # 限制堆，别把服务器内存吃光
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks: [mmnet]
+    restart: always
+
+  minio:
+    image: minio/minio:latest                 # 对象存储(文件服务用)
+    container_name: mmc-minio
+    command: server /data --console-address ":9001"  # 固定写法，别被 GitBash 污染路径(你踩过)
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASS}
+    volumes:
+      - minio-data:/data
+    networks: [mmnet]
+    restart: always
+
+  redis-stack:
+    image: redis/redis-stack:latest           # AI 向量库(6380)，与业务 Redis 分开
+    container_name: mmc-redis-stack
+    volumes:
+      - redisstack-data:/data
+    networks: [mmnet]
+    restart: always
+
+  # ─────────────────────── 业务服务层 ───────────────────────
+  # 全部用同一个 Dockerfile，靠 build args 的 MODULE 区分
+  # depends_on 让它们等 nacos/mysql/redis healthy 才启动
+
+  gateway:
+    build:
+      context: ..                             # ★上下文是项目根(deploy 的上一级)，才拿得到各模块 jar
+      dockerfile: deploy/Dockerfile
+      args: { MODULE: mini-mall-gateway }
+    container_name: mmc-gateway
+    environment:
+      <<: *java-env                           # 复用公共环境锚点
+    ports:
+      - "9080:9080"                           # 网关是唯一需要被 Nginx 转发的，暴露给内网
+    depends_on:
+      nacos: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  user:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-user } }
+    container_name: mmc-user
+    environment:
+      <<: *java-env
+      # user 服务额外用到邮箱发信，授权码从 .env 注入(松绑定覆盖 yml)
+      SPRING_MAIL_PASSWORD: ${MAIL_AUTH_CODE}
+    depends_on:
+      nacos: { condition: service_healthy }
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  product:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-product } }
+    container_name: mmc-product
+    environment: { <<: *java-env }
+    depends_on:
+      nacos: { condition: service_healthy }
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  order:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-order } }
+    container_name: mmc-order
+    environment: { <<: *java-env }            # order 用到 seata/redis/mq，公共环境已覆盖
+    depends_on:
+      nacos: { condition: service_healthy }
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  review:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-review } }
+    container_name: mmc-review
+    environment: { <<: *java-env }
+    depends_on:
+      nacos: { condition: service_healthy }
+      mysql: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  search:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-search } }
+    container_name: mmc-search
+    environment:
+      <<: *java-env
+      SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200  # 搜索服务连 ES 容器
+    depends_on:
+      nacos: { condition: service_healthy }
+      elasticsearch: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  auth:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-auth } }
+    container_name: mmc-auth
+    environment:
+      <<: *java-env
+      SPRING_MAIL_PASSWORD: ${MAIL_AUTH_CODE} # 邮箱验证码登录用
+    depends_on:
+      nacos: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  file:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-file } }
+    container_name: mmc-file
+    environment:
+      <<: *java-env
+      MINIO_ENDPOINT: http://minio:9000       # 文件服务连 minio 容器
+      MINIO_ACCESSKEY: ${MINIO_USER}
+      MINIO_SECRETKEY: ${MINIO_PASS}
+    depends_on:
+      nacos: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  payment:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-payment } }
+    container_name: mmc-payment
+    environment:
+      <<: *java-env
+      # 支付宝密钥 + 公网回调地址全从 .env 注入(绝不进 git)
+      ALIPAY_APP_ID: ${ALIPAY_APP_ID}
+      ALIPAY_PRIVATE_KEY: ${ALIPAY_PRIVATE_KEY}
+      ALIPAY_PUBLIC_KEY: ${ALIPAY_PUBLIC_KEY}
+      ALIPAY_NOTIFY_URL: ${ALIPAY_NOTIFY_URL}
+      ALIPAY_REFUND_NOTIFY_URL: ${ALIPAY_REFUND_NOTIFY_URL}
+    depends_on:
+      nacos: { condition: service_healthy }
+      mysql: { condition: service_healthy }
+    networks: [mmnet]
+    restart: always
+
+  ai:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { MODULE: mini-mall-ai } }
+    container_name: mmc-ai
+    environment:
+      <<: *java-env
+      # AI 向量库指到 redis-stack；DeepSeek key 从 .env 注入
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      # ⚠ Embedding：本机是 Ollama(11434)，云服务器多半没 GPU
+      #   要么连宿主机 Ollama，要么换云端向量 API，见 README 说明
+    depends_on:
+      nacos: { condition: service_healthy }
+      redis-stack: { condition: service_started }
+    networks: [mmnet]
+    restart: always
+
+  # ─────────────────────── 入口层 ───────────────────────
+
+  nginx:
+    image: nginx:1.25
+    container_name: mmc-nginx
+    ports:
+      - "80:80"                               # 对公网只开 80/443
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro  # 挂配置(只读)
+      - ./nginx/html:/usr/share/nginx/html:ro                 # 前端 dist 拷这里
+      # - ./nginx/cert:/etc/nginx/cert:ro     # HTTPS 证书目录(配好证书再放开)
+    depends_on:
+      - gateway
+    networks: [mmnet]
+    restart: always
+
+# 所有容器同一网络，容器名即主机名
+networks:
+  mmnet:
+    driver: bridge
+
+# 命名卷：容器删了数据还在
+volumes:
+  mysql-data:
+  redis-data:
+  nacos-data:
+  rabbitmq-data:
+  es-data:
+  minio-data:
+  redisstack-data:
